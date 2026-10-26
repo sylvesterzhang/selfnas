@@ -26,7 +26,7 @@ import (
 	"time"
 )
 
-const version = "0.19.3"
+const version = "0.19.4"
 
 //go:embed web
 var webFS embed.FS
@@ -166,7 +166,7 @@ func printBanner(firstRun bool) {
 		"  账号:    "+cfg.User,
 	)
 	if firstRun {
-		lines = append(lines, "  密码:    见下方 [首次密码] 一行（请立即在管理台修改）")
+		lines = append(lines, "  密码:    "+defaultPassword+"（默认密码，请登录后到管理台修改）")
 	}
 	lines = append(lines, "================================================", "")
 	fmt.Println(strings.Join(lines, "\n"))
@@ -229,13 +229,19 @@ func loadConfig() (bool, error) {
 	return false, normalizeConfig()
 }
 
+// defaultPassword 首次启动使用的密码。
+//
+// 早先这里是随机生成 14 位密码再打印到控制台，问题是：用户大多双击 exe 或后台启动，
+// 控制台一闪就没了，密码等于没给 —— 结果「装好了却进不去」，还得翻日志找。
+// 默认密码虽然弱，但至少进得去；进去之后管理台就能改。
+const defaultPassword = "123456"
+
 func bootstrapConfig() error {
-	pw := randomPassword(14)
 	cfg = Config{
 		Port:              8080,
 		Bind:              "0.0.0.0",
 		User:              "admin",
-		PassHash:          hashPassword(pw),
+		PassHash:          hashPassword(defaultPassword),
 		Secret:            randomHex(32),
 		AdminOnlyLocal:    true,
 		UploadConcurrency: 2,
@@ -255,11 +261,7 @@ func bootstrapConfig() error {
 			Enabled: d.Letter != "C",
 		})
 	}
-	if err := saveConfigLocked(); err != nil {
-		return err
-	}
-	fmt.Println("[首次密码] " + pw)
-	return nil
+	return saveConfigLocked()
 }
 
 func normalizeConfig() error {
@@ -554,15 +556,6 @@ func randomBytes(n int) []byte {
 }
 
 func randomHex(n int) string { return hex.EncodeToString(randomBytes(n)) }
-
-func randomPassword(n int) string {
-	const charset = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-	b := randomBytes(n)
-	for i := range b {
-		b[i] = charset[int(b[i])%len(charset)]
-	}
-	return string(b)
-}
 
 // ---------- 网络工具 ----------
 

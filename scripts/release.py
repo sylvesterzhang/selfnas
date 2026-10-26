@@ -8,7 +8,17 @@ import hashlib
 import zipfile
 import tarfile
 
-V = '0.19.3'
+def _version():
+    """从 main.go 里读 const version —— 版本号只写在一处，改完不用再回来同步。"""
+    with open('main.go', encoding='utf-8') as f:
+        for line in f:
+            s = line.strip()
+            if s.startswith('const version'):
+                return s.split('"')[1]
+    raise SystemExit('main.go 里找不到 const version')
+
+
+V = _version()
 DIST = 'dist'
 
 README_TXT = """selfnas {v} - 自建文件服务器
@@ -19,12 +29,10 @@ README_TXT = """selfnas {v} - 自建文件服务器
 Windows:    双击 selfnas.exe
 Linux/macOS: ./selfnas
 
-首次启动会自动生成 config.json（在程序旁边），把本机磁盘作为可访问的根目录，
-并在控制台打印一个随机密码：
+首次启动会自动生成 config.json（在程序旁边），把本机磁盘作为可访问的根目录。
+账号 admin，密码 123456。
 
-    [首次密码] Xk9mQ2vLp7RtZa
-
-拿这个密码打开 http://127.0.0.1:8080/admin ，第一件事就是改掉它。
+打开 http://127.0.0.1:8080/admin 登录，第一件事就是到「修改密码」里改掉它。
 
 然后手机连同一个 WiFi，扫管理台里的二维码即可。
 

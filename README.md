@@ -80,30 +80,42 @@ Linux / macOS：
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o selfnas .
 ```
 
+要一次编出全部五个平台（Windows / Linux / macOS × amd64、arm64）并打包：
+
+```bash
+python scripts/build.py      # 只编 Windows 就 python scripts/build.py windows
+python scripts/release.py    # 打成 zip / tar.gz + SHA256SUMS，产物在 dist/
+```
+
+版本号只写在 `main.go` 的 `const version` 一处，两个脚本都会去读它。
+
 ### 运行
 
 ```bash
 ./selfnas.exe
 ```
 
-首次启动会**自动生成 `config.json`**，枚举本机磁盘作为根目录（C 盘默认关闭），并随机生成一个 14 位密码打印在控制台：
+首次启动会**自动生成 `config.json`**，枚举本机磁盘作为根目录（C 盘默认关闭）。账号密码是固定的：
 
 ```
-[首次密码] Xk9mQ2vLp7RtZa
+账号 admin    密码 123456
 ```
 
-拿着这个密码进管理台，第一件事改掉它。
+登录管理台后第一件事就是改掉它 —— 管理台里有「修改密码」区块，填原密码和新密码就行。
+
+> 早先版本是随机生成密码打印在控制台，实践下来不好用：双击 exe 启动时控制台一闪就没了，密码等于没给，还得去翻日志。固定默认密码至少能让人进去。
 
 启动横幅：
 
 ```
 ================================================
-  selfnas 0.19.3
+  selfnas 0.19.4
   管理台:  http://127.0.0.1:8080/admin
   局域网:  http://192.168.1.100/admin
   配置:    ./config.json
   数据:    ./selfnas.db
   账号:    admin
+  密码:    123456（默认密码，请登录后到管理台修改）
 ================================================
 ```
 
