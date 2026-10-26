@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>selfnas 管理台</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="shell">
+  <aside class="side">
+    <div class="brand">selfnas<small id="verLine">加载中…</small></div>
+    <nav class="nav">
+      <button data-tab="overview" class="active">概览</button>
+      <button data-tab="roots">根目录</button>
+      <button data-tab="account">账号安全</button>
+      <button data-tab="system">系统设置</button>
+      <button data-tab="logs">日志</button>
+    </nav>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <h1 id="pageTitle">概览</h1>
+      <div class="who">
+        <span id="whoText"></span>
+        <button class="btn sm" id="btnLogout">退出</button>
+      </div>
+    </div>
+
+    <section class="panel on" id="panel-overview">
+      <div class="qr-card">
+        <div class="qr-img-wrap">
+          <img id="qrImg" alt="扫码连接二维码" width="152" height="152">
+        </div>
+        <div class="qr-side">
+          <div class="qr-title">手机扫码连接（固定二维码）</div>
+          <div class="qr-url mono" id="qrUrl">加载中…</div>
+          <div class="qr-tip" id="qrTip">扫开后输一次后台密码即可，之后长期免登录</div>
+          <div class="qr-note" id="qrNote">地址跟着本机局域网 IP 走，路由器换了 IP 就重新保存一次</div>
+          <div class="qr-btns">
+            <a class="btn sm" id="btnQrDown" download="selfnas-qr.png">保存二维码</a>
+            <button class="btn sm" id="btnQr">重新生成</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="cards">
+        <div class="card"><div class="k">运行状态</div><div class="v" id="stUptime">—</div><div class="s" id="stStarted">—</div></div>
+        <div class="card"><div class="k">当前通道</div><div class="v" id="stChannel">—</div><div class="s" id="stLan">—</div></div>
+        <div class="card"><div class="k">已启用目录</div><div class="v" id="stRoots">—</div><div class="s">可访问的根目录数量</div></div>
+        <div class="card"><div class="k">Tailscale</div><div class="v" id="stTs">—</div><div class="s" id="stTsIP">外网访问通道</div></div>
+      </div>
+
+      <h2 class="section-title">根目录概况</h2>
+      <table id="tblOverview">
+        <thead><tr><th style="width:120px">名称</th><th>路径</th><th style="width:150px">剩余 / 总容量</th><th style="width:90px">状态</th></tr></thead>
+        <tbody></tbody>
+      </table>
+
+      <h2 class="section-title" style="margin-top:24px">服务信息</h2>
+      <table>
+        <tbody>
+          <tr><td style="width:120px">版本</td><td class="mono" id="infoVersion">—</td></tr>
+          <tr><td>配置文件</td><td class="mono" id="infoConfig">—</td></tr>
+          <tr><td>监听端口</td><td class="mono" id="infoPort">—</td></tr>
+          <tr><td>局域网地址</td><td class="mono" id="infoLan">—</td></tr>
+          <tr><td>管理台限制</td><td id="infoGuard">—</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" id="panel-roots">
+      <h2 class="section-title">
+        <span>可访问的目录</span>
+        <button class="btn primary sm" id="btnAddRoot">添加目录</button>
+      </h2>
+      <p class="muted" style="margin-top:-4px;margin-bottom:12px">移除只影响访问权限，不会删除任何文件。改动立即生效。</p>
+      <table id="tblRoots">
+        <thead><tr><th style="width:150px">名称</th><th>路径</th><th style="width:90px">只读</th><th style="width:90px">启用</th><th style="width:150px">剩余 / 总容量</th><th style="width:70px"></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="panel" id="panel-account">
+      <h2 class="section-title">修改密码</h2>
+      <div style="max-width:380px">
+        <div class="field"><label>原密码</label><input type="password" id="pwOld" autocomplete="current-password"></div>
+        <div class="field"><label>新密码（至少 6 位）</label><input type="password" id="pwNew" autocomplete="new-password"></div>
+        <div class="field"><label>确认新密码</label><input type="password" id="pwNew2" autocomplete="new-password"></div>
+        <button class="btn primary" id="btnPw">更新密码</button>
+        <div class="err" id="pwErr"></div>
+        <p class="hint">密码以 PBKDF2-SHA256（12 万次迭代 + 随机盐）存储，修改后所有会话失效，需要重新登录。</p>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-system">
+      <h2 class="section-title">访问与安全</h2>
+      <table style="margin-bottom:22px">
+        <tbody>
+          <tr>
+            <td style="width:260px">管理台仅允许本机 / Tailscale 访问</td>
+            <td><label class="switch"><input type="checkbox" id="optAdminOnly"><span class="track"></span></label></td>
+            <td class="muted">关闭后，同一局域网内的设备也能打开管理台</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 class="section-title">传输与会话</h2>
+      <div class="grid2" style="max-width:620px">
+        <div class="field">
+          <label>上传并发数</label>
+          <input type="number" id="optConcurrency" min="1" max="8">
+          <div class="hint">3 适合大多数 WiFi：单条流被卡顿时其它流继续跑。全千兆有线可设 1</div>
+        </div>
+        <div class="field">
+          <label>登录有效期（天，不设上限）</label>
+          <input type="number" id="optSession" min="1" placeholder="3650">
+          <div class="hint">手机与后台共用。设多少都行，3650 天 = 10 年</div>
+        </div>
+      </div>
+      <div class="preset-row">
+        <span class="muted">快捷设置：</span>
+        <button class="btn sm" data-days="30">30 天</button>
+        <button class="btn sm" data-days="365">1 年</button>
+        <button class="btn sm" data-days="3650">10 年</button>
+        <button class="btn sm" data-days="36500">100 年</button>
+      </div>
+      <p class="hint" style="margin-top:10px">
+        浏览器对单个 Cookie 的生命周期上限是 400 天，所以超过 400 天的有效期靠「每次访问自动续期」实现——
+        只要不是连续一年多完全没打开过，就不会掉登录。
+      </p>
+      <button class="btn primary" id="btnSettings">保存设置</button>
+      <p class="hint">修改端口需要编辑 config.json 后重启程序；以上选项保存后立即生效。</p>
+    </section>
+
+    <section class="panel" id="panel-logs">
+      <h2 class="section-title">
+        <span>运行日志</span>
+        <button class="btn primary sm" id="btnLogRefresh">刷新</button>
+      </h2>
+      <div class="log-bar">
+        <label class="chk"><input type="checkbox" id="logAuto" checked> 自动刷新（3 秒）</label>
+        <span class="muted" id="logMeta">—</span>
+      </div>
+      <pre class="logbox" id="logBox">加载中…</pre>
+
+      <h2 class="section-title" style="margin-top:24px">传输记录</h2>
+      <p class="muted" style="margin-top:-4px;margin-bottom:10px">最近 50 条上传 / 下载 / 删除，落盘在 logs/transfers.jsonl</p>
+      <table id="tblTransfers">
+        <thead><tr><th style="width:150px">时间</th><th style="width:80px">类型</th><th>文件</th><th style="width:90px">大小</th><th style="width:120px">来源</th><th style="width:80px">结果</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+  </main>
+</div>
+
+<div class="overlay" id="modalAdd">
+  <div class="modal">
+    <h3>添加可访问目录</h3>
+    <div class="sub">可以是整块磁盘，也可以是某个子目录，例如 D:\视频</div>
+    <div class="field"><label>显示名称（留空则用目录名）</label><input type="text" id="addName" placeholder="例如：视频素材"></div>
+    <div class="field">
+      <label>目录路径</label>
+      <input type="text" id="addPath" placeholder="D:\">
+      <div class="hint">点击下方列表可逐层进入，或直接输入完整路径</div>
+      <div class="browser" id="browser"></div>
+      <div class="hint" id="browserPath"></div>
+    </div>
+    <div class="field"><label><input type="checkbox" id="addReadonly"> 只读（手机端只能下载，不能上传/删除）</label></div>
+    <div class="err" id="addErr"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="btnAddCancel">取消</button>
+      <button class="btn primary" id="btnAddOk">添加</button>
+    </div>
+  </div>
+</div>
+
+<div id="login">
+  <form class="login-box" id="loginForm">
+    <h2>selfnas</h2>
+    <p class="sub">登录管理台</p>
+    <div class="field"><label>账号</label><input type="text" id="loginUser" value="admin" autocomplete="username"></div>
+    <div class="field"><label>密码</label><input type="password" id="loginPass" autocomplete="current-password"></div>
+    <button class="btn primary" type="submit">登录</button>
+    <div class="err" id="loginErr"></div>
+  </form>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="/assets/admin.js"></script>
+</body>
+</html>

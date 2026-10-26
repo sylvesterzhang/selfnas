@@ -1,0 +1,20 @@
+# 仓库里统一存 LF。这样 Linux / macOS 用户 clone 下来不会拿到一堆 CRLF，
+# 而 Windows 用户检出时会按下面的规则转回自己需要的行尾。
+* text=auto eol=lf
+
+# Windows 批处理必须是 CRLF —— 用 LF 的 .bat 在某些环境下 cmd 解析会出错
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制：不要让 git 做任何行尾转换或文本 diff
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.mp4 binary
+*.zip binary
+*.exe binary
