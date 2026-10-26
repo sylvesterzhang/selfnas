@@ -44,7 +44,7 @@
 需要 Go 1.24+。**不需要 cgo、不需要 GCC**，`CGO_ENABLED=0` 直接交叉编译。
 
 ```bash
-git clone https://github.com/<your-name>/selfnas.git
+git clone https://github.com/sylvesterzhang/selfnas.git
 cd selfnas
 go build -o selfnas.exe .
 ```
