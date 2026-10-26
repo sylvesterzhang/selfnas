@@ -39,7 +39,32 @@
 
 ## 快速开始
 
-### 编译
+### 直接下载
+
+到 [**Releases**](https://github.com/sylvesterzhang/selfnas/releases) 拿对应平台的压缩包，解压就能跑，不用装 Go：
+
+| 平台 | 文件后缀 |
+|---|---|
+| Windows（64 位） | `windows-amd64.zip` → 双击 `selfnas.exe` |
+| Linux x86_64 | `linux-amd64.tar.gz` |
+| Linux ARM64（树莓派等） | `linux-arm64.tar.gz` |
+| macOS Intel | `darwin-amd64.tar.gz` |
+| macOS Apple Silicon | `darwin-arm64.tar.gz` |
+
+Linux / macOS 解压后先加执行权限：
+
+```bash
+chmod +x selfnas && ./selfnas
+```
+
+> macOS 首次运行可能提示「无法验证开发者」（二进制没做代码签名，个人项目签不起 99 美元的年费）：
+> ```bash
+> xattr -d com.apple.quarantine ./selfnas
+> ```
+
+每个包都带 `SHA256SUMS`，介意的话可以核对一下。
+
+### 自己编译
 
 需要 Go 1.24+。**不需要 cgo、不需要 GCC**，`CGO_ENABLED=0` 直接交叉编译。
 
@@ -73,7 +98,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o selfnas .
 
 ```
 ================================================
-  selfnas 0.19.2
+  selfnas 0.19.3
   管理台:  http://127.0.0.1:8080/admin
   局域网:  http://192.168.1.100/admin
   配置:    ./config.json
@@ -87,6 +112,21 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o selfnas .
 1. 电脑上打开管理台 → 生成二维码
 2. 手机（同一 WiFi）扫码 → 输一次密码 → 之后长期免登录
 3. 想更顺手就在 Safari / Chrome 里「添加到主屏幕」
+
+### 平台差异
+
+这个项目是在 Windows 上长出来的，所以有些地方带着 Windows 的痕迹：
+
+| | Windows | Linux / macOS |
+|---|---|---|
+| 首次启动枚举磁盘 | ✅ 自动把 C/D/E/F 列成根目录 | ❌ 不枚举，需要**手动添加根目录** |
+| 盘符显示 | 显示 `D:` `E:` 帮助认盘 | 无盘符，只显示目录名 |
+| 路径 | `D:\视频` | `/mnt/media` |
+| 其余功能 | 一致 | 一致 |
+
+Linux / macOS 下第一次启动后，进管理台「根目录」里手动加一条，填绝对路径即可。这是 `disk_other.go` 里 `listDrives()` 返回空导致的——枚举磁盘在非 Windows 上没有通用做法，与其乱猜不如不猜。
+
+> 上表说明的是「首次配置」的差别，不是功能缺失。配置好之后行为完全一致。
 
 ---
 
