@@ -6,6 +6,44 @@
 
 ---
 
+## 界面
+
+**电脑上**
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/files.png" alt="文件列表"><br><sub>文件列表 · 多个根目录、收藏星标、排序</sub></td>
+<td width="50%"><img src="docs/screenshots/store.png" alt="最近"><br><sub>「最近」· 记录到文件一级，点一下跳回原处</sub></td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/player.jpg" alt="播放器"><br><sub>播放器 · 进度条能拖、全屏、转 90° 铺满</sub></td>
+<td><img src="docs/screenshots/favorites.png" alt="收藏"><br><sub>「收藏」· 文件和文件夹都能收，跟账号走</sub></td>
+</tr>
+</table>
+
+<img src="docs/screenshots/admin.png" alt="管理台">
+
+<sub>管理台 · 扫码连接、根目录（可标只读）、改密码、缓存占用、日志</sub>
+
+**手机上**（浏览器打开，也可以「添加到主屏幕」当 App 用）
+
+<table>
+<tr>
+<td width="33%"><img src="docs/screenshots/mobile-files.png" alt="手机文件列表"></td>
+<td width="33%"><img src="docs/screenshots/mobile-photo.jpg" alt="手机看图"></td>
+<td width="33%"><img src="docs/screenshots/mobile-player.jpg" alt="手机看视频"></td>
+</tr>
+<tr>
+<td align="center"><sub>文件列表</sub></td>
+<td align="center"><sub>看图</sub></td>
+<td align="center"><sub>看视频</sub></td>
+</tr>
+</table>
+
+> 截图来自一份演示实例，目录和文件都是临时造的，不是谁的真实资料。
+
+---
+
 ## 特性
 
 **文件**
@@ -198,6 +236,10 @@ selfnas/
 ├── log.go           访问日志与传输记录
 ├── disk_windows.go  枚举磁盘（Windows）
 ├── disk_other.go    其他平台的空实现
+├── scripts/
+│   ├── build.py     交叉编译五个平台
+│   └── release.py   打 zip / tar.gz + SHA256SUMS
+├── docs/screenshots/  README 里用的截图
 └── web/             前端，原生 JS 无框架无构建
     ├── admin.html / admin.js    管理台
     ├── files.html / files.js    文件站
