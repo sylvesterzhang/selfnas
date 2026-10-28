@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -86,8 +87,43 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 			"adminOnlyLocal":    cfg.AdminOnlyLocal,
 			"uploadConcurrency": cfg.UploadConcurrency,
 		},
+		// 自启动状态随 state 一起带回去，管理台少发一次请求
+		"autostart": autostartGet(),
+		// 新版本检查结果（后台每 6 小时查一次 GitHub Releases，失败为空）
+		"update": updateInfo(),
 	}
 	writeJSON(w, 0, "ok", data)
+}
+
+// handleAutostart 开机自启动开关。GET 查状态，POST {enable:true/false} 执行切换。
+// 切换是即时生效的（重建/删除计划任务），不走「保存设置」那套批量保存。
+func handleAutostart(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, 0, "ok", autostartGet())
+	case http.MethodPost:
+		var body struct {
+			Enable *bool `json:"enable"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Enable == nil {
+			writeJSON(w, 400, "请求格式错误（需要 enable 字段）", nil)
+			return
+		}
+		info, err := autostartSet(*body.Enable)
+		if err != nil {
+			log.Printf("[自启] 切换失败 enable=%v: %v", *body.Enable, err)
+			writeJSON(w, 500, "设置失败: "+err.Error(), map[string]any{"autostart": info})
+			return
+		}
+		if *body.Enable {
+			log.Printf("[自启] 已开启，方式=%s 指向=%s", info.Mode, info.Exe)
+		} else {
+			log.Printf("[自启] 已关闭")
+		}
+		writeJSON(w, 0, "ok", info)
+	default:
+		writeJSON(w, 405, "只支持 GET/POST", nil)
+	}
 }
 
 func handleDrives(w http.ResponseWriter, r *http.Request) {
@@ -199,6 +235,51 @@ func handleRootAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 0, "已添加", nil)
+}
+
+// handleRootsRescan 重新枚举本机磁盘，把「现在存在、配置里没有」的盘追加成根目录。
+//
+// 为什么只增不改：配置里的条目可能被用户改过名、标过只读、禁用过 ——
+// 重扫的意义是「让新出现的盘自动进来」，不是「把配置恢复成出厂」。
+// 已有条目一律不碰，包括离线的（换系统导致的离线根，回来时自然恢复，不该被重扫清掉）。
+//
+// 触发场景：双系统共用一份 config.json 时，另一个系统多出来的盘不会自动出现；
+// 插了新硬盘、挂了新分区同理。点一下省去逐个「添加目录」的麻烦。
+func handleRootsRescan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, 405, "只支持 POST", nil)
+		return
+	}
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+
+	exist := make(map[string]bool, len(cfg.Roots))
+	for _, rt := range cfg.Roots {
+		exist[strings.ToLower(normPath(rt.Path))] = true
+	}
+	var added []string
+	for _, d := range listDrives() {
+		if !d.Ready || exist[strings.ToLower(normPath(d.Path))] {
+			continue
+		}
+		name := d.Label
+		if name == "" {
+			name = "磁盘 " + d.Letter
+		}
+		// 与首次启动保持同一口径：C 盘默认不启用，其余启用
+		cfg.Roots = append(cfg.Roots, Root{Name: name, Path: d.Path, Enabled: d.Letter != "C"})
+		exist[strings.ToLower(normPath(d.Path))] = true
+		added = append(added, d.Letter+":")
+	}
+	if len(added) == 0 {
+		writeJSON(w, 0, "没有发现新的磁盘", map[string]any{"added": added})
+		return
+	}
+	if err := saveConfigLocked(); err != nil {
+		writeJSON(w, 500, "保存失败: "+err.Error(), nil)
+		return
+	}
+	writeJSON(w, 0, "ok", map[string]any{"added": added})
 }
 
 func handleRootUpdate(w http.ResponseWriter, r *http.Request) {

@@ -148,6 +148,7 @@ func handleFSList(w http.ResponseWriter, r *http.Request) {
 		Size  int64  `json:"size"`
 		MTime int64  `json:"mtime"`
 		Kind  string `json:"kind"`
+		Thumb bool   `json:"thumb"` // 前端据此用 <img> 请求 /api/fs/thumb，false 就显示图标
 	}
 	out := make([]entry, 0, len(entries))
 	for _, e := range entries {
@@ -167,6 +168,7 @@ func handleFSList(w http.ResponseWriter, r *http.Request) {
 			Size:  info.Size(),
 			MTime: info.ModTime().Unix(),
 			Kind:  fileKind(name, isDir),
+			Thumb: !isDir && thumbableExt(filepath.Ext(name)),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {

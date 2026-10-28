@@ -177,13 +177,100 @@ func handleFavToggle(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 0, msg, map[string]any{"favorited": !fav})
 }
 
+// ---------- 刚点开标记 ----------
+//
+// 每个账号记「刚刚点开的那个文件」，列表里把它标出来——关掉播放器、刷新页面、
+// 换设备都还认得出。与进度同口径：进库、跟账号走。
+// GET  → { root, path, name }（没有就全空）
+// POST {root, path} → 覆盖写入（name 由 path 取末段）
+
+func handleLastOpenGet(w http.ResponseWriter, r *http.Request) {
+	root, path, name := getLastOpen(currentUser())
+	writeJSON(w, 0, "ok", map[string]any{"root": root, "path": path, "name": name})
+}
+
+func handleLastOpenSet(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		Root string `json:"root"`
+		Path string `json:"path"`
+	}
+	if !decodeBody(r, &b) {
+		writeJSON(w, 400, "请求格式错误", nil)
+		return
+	}
+	root := canonicalRoot(b.Root)
+	rel := strings.TrimSpace(b.Path)
+	if root == "" || rel == "" {
+		writeJSON(w, 400, "参数不完整", nil)
+		return
+	}
+	name := rel
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	if name == "" {
+		writeJSON(w, 400, "参数不完整", nil)
+		return
+	}
+	if err := setLastOpen(currentUser(), root, rel, name); err != nil {
+		writeJSON(w, 500, "保存失败: "+err.Error(), nil)
+		return
+	}
+	writeJSON(w, 0, "ok", nil)
+}
+
+// ---------- 播放进度 ----------
+//
+// 视频看到哪、下次接着看。与「最近 / 收藏」同口径：进库、跟账号走。
+// GET  ?root=&path=          → { pos, dur }（没记录就 0）
+// POST {root, path, pos, dur} → 保存；pos<=0（看完/拖回开头）即删记录
+
+func handleProgressGet(w http.ResponseWriter, r *http.Request) {
+	root := canonicalRoot(r.URL.Query().Get("root"))
+	rel := strings.TrimSpace(r.URL.Query().Get("path"))
+	if root == "" || rel == "" {
+		writeJSON(w, 400, "参数不完整", nil)
+		return
+	}
+	pos, dur := getProgress(currentUser(), root, rel)
+	writeJSON(w, 0, "ok", map[string]any{"pos": pos, "dur": dur})
+}
+
+func handleProgressSet(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		Root string  `json:"root"`
+		Path string  `json:"path"`
+		Pos  float64 `json:"pos"`
+		Dur  float64 `json:"dur"`
+	}
+	if !decodeBody(r, &b) {
+		writeJSON(w, 400, "请求格式错误", nil)
+		return
+	}
+	root := canonicalRoot(b.Root)
+	rel := strings.TrimSpace(b.Path)
+	if root == "" || rel == "" {
+		writeJSON(w, 400, "参数不完整", nil)
+		return
+	}
+	// 不 resolve/stat：上报来自正在播放的播放器，文件必然存在；
+	// 看完后文件被删也不该报错——删记录这个动作永远应该成功
+	if err := setProgress(currentUser(), root, rel, b.Pos, b.Dur); err != nil {
+		writeJSON(w, 500, "保存失败: "+err.Error(), nil)
+		return
+	}
+	writeJSON(w, 0, "ok", nil)
+}
+
 func handleStats(w http.ResponseWriter, r *http.Request) {
-	var recent, fav int
+	var recent, fav, prog int
 	_ = db.QueryRow(`SELECT COUNT(1) FROM recent WHERE username = ?`, currentUser()).Scan(&recent)
 	_ = db.QueryRow(`SELECT COUNT(1) FROM favorite WHERE username = ?`, currentUser()).Scan(&fav)
+	_ = db.QueryRow(`SELECT COUNT(1) FROM progress WHERE username = ? AND pos > 0`, currentUser()).Scan(&prog)
 	writeJSON(w, 0, "ok", map[string]any{
 		"recent": recent,
 		"fav":    fav,
+		"prog":   prog,
 		"dbFile": dbFile,
 		"dbSize": func() string {
 			if st, err := os.Stat(dbFile); err == nil {

@@ -21,41 +21,86 @@
     <h1 id="dirTitle">文件</h1>
     <span class="fs-sub" id="dirSub"></span>
   </div>
+  <!-- 根目录切换：桌面端跟标题同一行（像浏览器标签），手机端整行换到第二行 -->
+  <div class="fs-roots" id="rootsBar"></div>
   <div class="fs-head-actions">
     <button class="chip" id="btnRecent">最近</button>
-    <button class="chip" id="btnFav">收藏</button>
+    <!-- 叫「收藏夹」而不是「收藏」：面包屑那个「☆ 收藏」是动作，这个是列表，同名会混 -->
+    <button class="chip" id="btnFav">收藏夹</button>
     <button class="icon-btn" id="btnRefresh" title="刷新">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
+    </button>
+    <button class="icon-btn" id="btnPoster" title="分享给朋友">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>
     </button>
     <a class="icon-btn" href="/admin" title="管理台">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 8.9 19a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 5 8.9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9.5a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
     </a>
+    <!-- 桌面端的上传/新建放在顶栏（手机端藏在底部栏，这两个元素只在 ≥768px 显示） -->
+    <div class="fs-head-tools">
+      <label class="btn primary sm" for="filePicker" data-upload>上传文件</label>
+      <button class="btn sm" data-mkdir>新建文件夹</button>
+    </div>
   </div>
 </header>
 
-<div class="fs-roots" id="rootsBar"></div>
-<div class="fs-crumb" id="crumb"></div>
+<!-- 导航行拆两行：路径一行、工具（收藏/排序）一行。
+     路径可能很长（长文件夹名、层级深），挤在一行时收藏星钉在滚动容器右缘、
+     路径文字从按钮底下穿过去，看着像按钮盖住了路径。分两行后路径整行自用。 -->
+<div class="fs-nav">
+  <div class="fs-crumb" id="crumb"></div>
+  <div class="fs-tools">
+    <button class="crumb-star" id="crumbStar" hidden></button>
+    <div class="fs-sort" id="sortBar">
+      <span class="fs-sort-lbl">排序</span>
+      <button class="chip" data-sort="name">名称</button>
+      <button class="chip" data-sort="time">时间</button>
+    </div>
+  </div>
+</div>
 
-<div class="fs-sort" id="sortBar">
-  <span class="fs-sort-lbl">排序</span>
-  <button class="chip" data-sort="name">名称</button>
-  <button class="chip" data-sort="time">时间</button>
+<!-- 列标题：桌面端才显示。大小/时间两列原来没有任何标签，浮在页面中间不知道是什么 -->
+<div class="fs-colhead">
+  <div class="ch-main"></div>
+  <div class="ch-size">大小</div>
+  <div class="ch-time">修改时间</div>
+  <div class="ch-more"></div>
 </div>
 
 <main class="fs-list" id="list"></main>
 
 <div class="fs-uploadbox" id="uploadBox"></div>
 
+<!-- 分享海报：代码在 canvas 里画好再用 <img> 显示 ——
+     img 在手机上可以长按保存，canvas 不行（iOS 长按画布不弹菜单） -->
+<div class="overlay" id="poster">
+  <div class="poster-wrap">
+    <div class="poster-head">
+      <span>分享给朋友</span>
+      <button class="icon-btn" id="posterClose" title="关闭">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="poster-body" id="posterBody">
+      <div class="poster-loading">正在生成海报…</div>
+    </div>
+    <div class="poster-foot">
+      <button class="btn primary sm" id="posterSave">保存图片</button>
+      <span class="poster-hint">iPhone：长按图片 → 存储到照片</span>
+    </div>
+  </div>
+</div>
+
 <footer class="fs-actions">
-  <label class="btn primary" id="btnUpload" for="filePicker">上传文件</label>
-  <button class="btn" id="btnMkdir">新建文件夹</button>
+  <label class="btn primary" id="btnUpload" for="filePicker" data-upload>上传文件</label>
+  <button class="btn" id="btnMkdir" data-mkdir>新建文件夹</button>
 </footer>
 
 <div class="overlay" id="recent">
   <div class="modal" style="max-width:430px">
     <div class="panel-tabs" id="panelTabs">
       <button class="ptab on" data-tab="recent">最近</button>
-      <button class="ptab" data-tab="fav">收藏</button>
+      <button class="ptab" data-tab="fav">收藏夹</button>
     </div>
     <div class="recent-list" id="recentList"></div>
     <div class="modal-actions">

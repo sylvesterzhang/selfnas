@@ -26,7 +26,7 @@ import (
 	"time"
 )
 
-const version = "0.19.4"
+const version = "0.19.5"
 
 //go:embed web
 var webFS embed.FS
@@ -52,6 +52,9 @@ type Config struct {
 	SessionDays       int    `json:"sessionDays"`
 	// 可留空：留空时按「几个常见安装位置 + PATH」自动找。MKV 这类文件要靠它换封装才能播。
 	FFmpeg string `json:"ffmpeg"`
+	// 可留空：ffmpeg 引导安装的下载地址（zip，里面要有 ffmpeg.exe / ffprobe.exe）。
+	// 留空用内置默认（gyan.dev 官方构建）；国内慢可以填镜像。
+	FFmpegURL string `json:"ffmpegUrl"`
 }
 
 // DriveInfo 系统盘符信息（仅用于展示与首次生成默认配置）
@@ -78,6 +81,7 @@ func main() {
 	flag.StringVar(&cfgPath, "c", "", "配置文件路径（默认与 exe 同目录 config.json）")
 	flag.IntVar(&port, "p", 0, "监听端口（覆盖配置文件）")
 	flag.StringVar(&dbPath, "db", "", "数据库文件路径（默认 config.json 同目录 selfnas.db），测试用独立库时指定")
+	flag.BoolVar(&ffForceMissing, "no-ffmpeg", false, "测试用：假装没装 ffmpeg，用于验证引导安装流程")
 	flag.Parse()
 
 	if cfgPath == "" {
@@ -115,13 +119,45 @@ func main() {
 		log.Fatalf("打开数据库失败: %v", err)
 	}
 	defer closeDB()
-	printBanner(firstRun)
 
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+
+	// 先把端口真正绑上，再打印横幅。
+	//
+	// 为什么顺序不能反：横幅里的 URL 是用户唯一的使用入口，双击场景下用户看到就立刻去开浏览器。
+	// 若先打横幅再 ListenAndServe，首次运行时 Windows Defender 要现场扫描刚下载的 exe，
+	// 「横幅出现」到「端口真正可连」之间可能差好几秒 —— 用户按横幅打开的页面就是
+	// 连接失败/空白，还以为程序坏了（2026-10-28 用户实测：重开一次才正常）。
+	// 先绑端口再报地址，横幅出现的那一刻 URL 就是可用的。
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		// 绑定失败（十有八九是端口被占）。注意不能用 log.Fatalf：
+		// 双击启动时控制台窗口会随进程退出瞬间关闭，用户什么都看不见，只会觉得「程序坏了」。
+		fmt.Println("")
+		fmt.Println("================================================")
+		fmt.Println("  启动失败：端口 " + itoa(cfg.Port) + " 无法监听，多半被别的程序占用了")
+		fmt.Println("  处理：换一个端口（编辑 config.json 里的 port 后重新启动），")
+		fmt.Println("        或关掉占用该端口的程序。")
+		fmt.Println("  查占用：netstat -ano | findstr :" + itoa(cfg.Port))
+		fmt.Println("================================================")
+		fmt.Println("")
+		fmt.Print("按回车键退出…")
+		buf := make([]byte, 16)
+		// 服务场景（计划任务/S4U）没有可交互的 stdin，这里会立刻返回，进程照常退出；
+		// 双击场景则停在这里，用户有时间看清原因。
+		os.Stdin.Read(buf)
+		os.Exit(1)
+	}
+
+	// 端口已可连，现在才告诉用户地址
+	printBanner(firstRun)
+
+	// 读上次「检查更新」的缓存结果（检查本身是用户点按钮触发的，不自动查）
+	loadUpdateCache()
 
 	// Ctrl+C / SIGTERM 时先停 HTTP、再关库（defer closeDB 会做 checkpoint）。
 	//
@@ -140,8 +176,8 @@ func main() {
 		}
 	}()
 
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("服务启动失败（端口可能被占用）: %v", err)
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatalf("服务启动失败: %v", err)
 	}
 	log.Println("[退出] 已关闭")
 }
@@ -694,12 +730,29 @@ func routes() http.Handler {
 	mux.HandleFunc("/api/logout", handleLogout)
 	mux.HandleFunc("/api/state", guard(handleState))
 	mux.HandleFunc("/api/roots/add", guard(handleRootAdd))
+	mux.HandleFunc("/api/roots/rescan", guard(handleRootsRescan))
 	mux.HandleFunc("/api/roots/update", guard(handleRootUpdate))
+	// ffmpeg 引导安装：触发点在播放器里（手机上也会用到），所以用 guardAuth 而不是 guard
+	mux.HandleFunc("/api/ffmpeg/install", guardAuth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, 405, "只支持 POST", nil)
+			return
+		}
+		if err := startFFInstall(); err != nil {
+			writeJSON(w, 409, err.Error(), nil)
+			return
+		}
+		writeJSON(w, 0, "已开始安装", nil)
+	}))
+	mux.HandleFunc("/api/ffmpeg/status", guardAuth(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 0, "ok", ffStatus())
+	}))
 	mux.HandleFunc("/api/roots/delete", guard(handleRootDelete))
 	mux.HandleFunc("/api/password", guard(handlePassword))
 	mux.HandleFunc("/api/drives", guard(handleDrives))
 	mux.HandleFunc("/api/browse", guard(handleBrowse))
 	mux.HandleFunc("/api/settings", guard(handleSettings))
+	mux.HandleFunc("/api/autostart", guard(handleAutostart))
 	mux.HandleFunc("/api/qr/token", guard(handleQRToken))
 	mux.HandleFunc("/api/logs/tail", guard(handleLogTail))
 	mux.HandleFunc("/api/logs/transfers", guard(handleTransferList))
@@ -707,6 +760,7 @@ func routes() http.Handler {
 	// 文件站接口：只校验登录态，不做「仅本机」限制（手机要能用）
 	mux.HandleFunc("/api/fs/roots", guardAuth(handleFSRoots))
 	mux.HandleFunc("/api/fs/list", guardAuth(handleFSList))
+	mux.HandleFunc("/api/fs/thumb", guardAuth(handleFSThumb))
 	mux.HandleFunc("/api/fs/download", guardAuth(handleFSDownload))
 	// MKV/AVI/TS 这类 iOS 播不了的容器，实时换封装成 MP4 流
 	mux.HandleFunc("/api/fs/play", guardAuth(handleFSPlay))
@@ -744,6 +798,30 @@ func routes() http.Handler {
 		handleFavList(w, r)
 	}))
 	mux.HandleFunc("/api/fs/stats", guardAuth(handleStats))
+	mux.HandleFunc("/api/update/check", guard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, 405, "只支持 POST", nil)
+			return
+		}
+		// checked 告诉前端这次真查到了没有：查不到时内存/缓存原样保留，
+		// 前端提示「没查到」，而不是拿旧缓存冒充新检查结果
+		checked := checkUpdateNow()
+		writeJSON(w, 0, "ok", map[string]any{"checked": checked, "update": updateInfo()})
+	}))
+	mux.HandleFunc("/api/fs/progress", guardAuth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			handleProgressSet(w, r)
+			return
+		}
+		handleProgressGet(w, r)
+	}))
+	mux.HandleFunc("/api/fs/lastopen", guardAuth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			handleLastOpenSet(w, r)
+			return
+		}
+		handleLastOpenGet(w, r)
+	}))
 
 	return withLogging(mux)
 }

@@ -87,6 +87,23 @@ func migrateDB() error {
 			ts       INTEGER NOT NULL,
 			PRIMARY KEY (username, root, path)
 		)`,
+		`CREATE TABLE IF NOT EXISTS progress (
+			username TEXT NOT NULL,
+			root     TEXT NOT NULL,
+			path     TEXT NOT NULL,
+			pos      REAL NOT NULL DEFAULT 0,
+			dur      REAL NOT NULL DEFAULT 0,
+			ts       INTEGER NOT NULL,
+			PRIMARY KEY (username, root, path)
+		)`,
+		`CREATE TABLE IF NOT EXISTS lastopen (
+			username TEXT NOT NULL,
+			root     TEXT NOT NULL,
+			path     TEXT NOT NULL,
+			name     TEXT NOT NULL,
+			ts       INTEGER NOT NULL,
+			PRIMARY KEY (username)
+		)`,
 		`CREATE INDEX IF NOT EXISTS ix_recent_ts ON recent (username, ts DESC)`,
 		`CREATE INDEX IF NOT EXISTS ix_fav_ts ON favorite (username, ts DESC)`,
 	}
@@ -214,6 +231,68 @@ func isFavorited(user, root, path string) bool {
 		return false
 	}
 	return n > 0
+}
+
+// ---------- 播放进度 ----------
+//
+// 跟「最近 / 收藏」同一待遇：进 SQLite、跟账号走（换设备也能续上），不用 localStorage。
+// 只存 root + path + 位置，元信息读的时候现 stat —— 文件没了自然就续不上，不会报错。
+
+func getProgress(user, root, path string) (float64, float64) {
+	var pos, dur float64
+	if err := db.QueryRow(
+		`SELECT pos, dur FROM progress WHERE username = ? AND root = ? AND path = ?`,
+		user, root, path).Scan(&pos, &dur); err != nil {
+		return 0, 0
+	}
+	return pos, dur
+}
+
+// setProgress 写入进度；pos <= 0 视为「从头看」（看完/手动拖回开头），直接删记录。
+func setProgress(user, root, path string, pos, dur float64) error {
+	if pos <= 0.5 {
+		return removeProgress(user, root, path)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO progress (username, root, path, pos, dur, ts) VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(username, root, path) DO UPDATE SET pos = excluded.pos, dur = excluded.dur, ts = excluded.ts`,
+		user, root, path, pos, dur, time.Now().Unix()); err != nil {
+		return err
+	}
+	flush()
+	return nil
+}
+
+func removeProgress(user, root, path string) error {
+	if _, err := db.Exec(
+		`DELETE FROM progress WHERE username = ? AND root = ? AND path = ?`,
+		user, root, path); err != nil {
+		return err
+	}
+	flush()
+	return nil
+}
+
+// 「刚点开」标记：每个账号只记一个文件（点新的就挪走），进 SQLite 跟账号走——
+// 刷新页面、换设备都还在。文件被删/改名后列表匹配不上，标记自然消失，不用清理。
+func getLastOpen(user string) (root, path, name string) {
+	var r, p, n string
+	if err := db.QueryRow(
+		`SELECT root, path, name FROM lastopen WHERE username = ?`, user).Scan(&r, &p, &n); err != nil {
+		return "", "", ""
+	}
+	return r, p, n
+}
+
+func setLastOpen(user, root, path, name string) error {
+	if _, err := db.Exec(
+		`INSERT INTO lastopen (username, root, path, name, ts) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(username) DO UPDATE SET root = excluded.root, path = excluded.path, name = excluded.name, ts = excluded.ts`,
+		user, root, path, name, time.Now().Unix()); err != nil {
+		return err
+	}
+	flush()
+	return nil
 }
 
 func closeDB() {

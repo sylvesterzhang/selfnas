@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id);
 // 20 秒纯粹是「宁可慢一点也不要永久挂住」的保险丝。
 const API_TIMEOUT_MS = 20000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const S = { roots: [], root: '', rootName: '', rootDrive: '', path: '', readonly: false, entries: [], queue: [], busy: false };
+const S = { roots: [], root: '', rootName: '', rootDrive: '', path: '', readonly: false, entries: [], queue: [], busy: false, lastOpen: null };
 // 4MB：8MB 一片时，一次「回包丢失」就要白等几十秒并且重传 8MB；
 // 切到 4MB 后单片失败代价减半，进度也更细。局域网 2-5ms 的 RTT 撑得起这个请求数（253MB≈64 片）。
 const CHUNK = 4 * 1024 * 1024;
@@ -117,13 +117,14 @@ async function loadList() {
 function renderCrumb(parent) {
   const box = $('crumb');
   box.innerHTML = '';
-  box.style.display = S.path ? 'flex' : 'none';
-  if (!S.path) { $('dirTitle').textContent = rootTag(S.rootName, S.rootDrive); }
+  // 恒显示：根目录时只剩根名一项也不藏——藏了整页上下跳，跟「上一级」恒占位同一个道理
   const parts = S.path ? S.path.split('/') : [];
   const home = document.createElement('span');
-  home.className = 'crumb-item link';
-  home.textContent = rootTag(S.rootName, S.rootDrive);
-  home.addEventListener('click', () => { S.path = ''; loadList(); });
+  home.className = 'crumb-item' + (parts.length ? ' link' : '');
+  // 根目录时这一项跟上面的标题完全一样（「资料 D:」），并排看着像渲染重复；
+  // 这时改写成磁盘路径 D:\，既不一样，又把"这到底是哪个盘"补了回来
+  home.textContent = parts.length ? rootTag(S.rootName, S.rootDrive) : (S.rootDrive + '\\');
+  if (parts.length) home.addEventListener('click', () => { S.path = ''; loadList(); });
   box.appendChild(home);
   let acc = [];
   parts.forEach((p, i) => {
@@ -142,36 +143,48 @@ function renderCrumb(parent) {
     box.appendChild(it);
   });
   $('dirTitle').textContent = parts.length ? parts[parts.length - 1] : rootTag(S.rootName, S.rootDrive);
-  // 副标题带完整磁盘路径（含盘符）：进到深层目录时，光看标题不知道这是哪个盘下的同名文件夹
-  const diskPath = S.rootDrive + '\\' + (S.path ? S.path.split('/').join('\\') : '');
-  $('dirSub').textContent = (S.readonly ? '只读 · ' : '') + diskPath + ' · ' + S.entries.length + ' 项';
+  // 副标题只说「只读 + 多少项」：完整路径在面包屑里已经有了，两处都写一遍等于同一句话占两行，
+  // 还把首屏往上顶。盘符也由面包屑第一项（「文档 F:」）交代
+  $('dirSub').textContent =
+    (S.readonly ? '只读 · ' : '') + S.entries.length + ' 项';
 
   if (S.path) mountCrumbStar();
+  else $('crumbStar').hidden = true;   // 根目录没有「收藏这个文件夹」可点（收藏的是子文件夹）
 }
 
-// 「收藏这个文件夹」的星标，放在面包屑最右端：它旁边就是"你在哪一层"，
-// 收藏动作跟位置在同一行，不用去 ⋮ 菜单里翻（那里藏得太深，等于没有）。
+// 「收藏这个文件夹」的星标：常驻在路径下方的工具行左端，跟排序同一排。
+// 收藏动作和「你在哪一层」上下贴着，不用去 ⋮ 菜单里翻（那里藏得太深，等于没有）。
+// 光一颗灰星没人知道能点、更不知道是收藏功能（用户实测反馈），
+// 所以做成带文字的药丸按钮：「☆ 收藏」→「★ 已收藏」，功能自己会说话。
+const STAR_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3.6l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.6 9.7l5.8-.8z"/></svg>';
+
 function mountCrumbStar() {
-  const box = $('crumb');
+  const b = $('crumbStar');
   const on = isFav(S.root, S.path);
-  const b = document.createElement('button');
-  b.className = 'crumb-star' + (on ? ' on' : '');
+  b.hidden = false;
+  b.classList.toggle('on', on);
   b.title = on ? '取消收藏这个文件夹' : '收藏这个文件夹';
-  b.innerHTML = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3.6l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.6 9.7l5.8-.8z"/></svg>';
-  b.addEventListener('click', async (ev) => {
-    ev.stopPropagation();
+  b.innerHTML = STAR_SVG + '<span>' + (on ? '已收藏' : '收藏') + '</span>';
+  b.onclick = async () => {
     const fav = await toggleFav(S.root, S.path);
     if (fav === null) return;
     b.classList.toggle('on', fav);
     b.title = fav ? '取消收藏这个文件夹' : '收藏这个文件夹';
-  });
-  box.appendChild(b);
+    b.querySelector('span').textContent = fav ? '已收藏' : '收藏';
+  };
 }
 
 function iconFor(kind) {
   const c = { dir: '#378ADD', video: '#1D9E75', image: '#BA7517', audio: '#7F77DD', archive: '#888780', file: '#888780' }[kind] || '#888780';
   const g = { dir: 'M3 7h6l2 2h10v10H3z', video: 'M4 5h16v14H4z M10 9l6 3-6 3z', image: 'M4 5h16v14H4z M8 11l3 3 2-2 4 4H7z', audio: 'M9 18V7l8-2v11', archive: 'M4 6h16v4H4z M6 10h12v8H6z', file: 'M6 3h8l4 4v14H6z' }[kind] || 'M6 3h8l4 4v14H6z';
   return '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="' + c + '" stroke-width="1.6" stroke-linejoin="round"><path d="' + g + '"/></svg>';
+}
+
+// 缩略图地址。服务端按 修改时间 做缓存键，文件被替换会自动出新图。
+function thumbURL(e) {
+  // 带上 mtime：文件被替换（同名不同内容）时 URL 跟着变，浏览器不会一直拿旧缩略图。
+  // 服务端不看这个参数，缓存键用的也是 mtime，两边一致
+  return '/api/fs/thumb?' + q(S.root, e.path) + '&t=' + (e.mtime || 0);
 }
 
 function sizeText(n) {
@@ -294,7 +307,7 @@ async function renderPanel() {
   if (!items.length) {
     box.innerHTML = '<div class="empty">' +
       (S.panelTab === 'fav'
-        ? '还没有收藏。收藏文件夹：进去之后点路径行右边的 ☆；收藏文件：点 ⋮ 里的「收藏」，或在播放页按 ★'
+        ? '还没有收藏。收藏文件夹：进去之后点路径行右边的「☆ 收藏」；收藏文件：点 ⋮ 里的「收藏」，或在播放页按 ★'
         : '还没有看过文件') +
       '</div>';
     return;
@@ -384,6 +397,10 @@ async function gotoStored(it) {
     setTimeout(() => openViewer(ent), 260);
     return;
   }
+  if (isTextFile(ent.name)) {
+    setTimeout(() => openTextViewer(ent, '/api/fs/download?' + q(S.root, ent.path)), 260);
+    return;
+  }
   toast('已定位到所在文件夹（这个类型要先下载才能打开）');
 }
 
@@ -395,6 +412,23 @@ function locateRow(name) {
   try { hit.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { hit.scrollIntoView(); }
   hit.classList.add('hl');
   setTimeout(() => hit.classList.remove('hl'), 2800);
+}
+
+// 「刚点开」标记：点了哪个文件，哪一行就一直挂着——播放器关掉、刷新页面、
+// 翻别的目录再回来，都认得出刚才开的是哪个；点下一个文件才挪走。
+// 服务端 SQLite 按账号存（跟进度同口径），不是 localStorage。
+function markLastOpen(e) {
+  if (!e || e.isDir) return;
+  S.lastOpen = { root: S.root, path: e.path, name: e.name };
+  paintLastOpen();
+  api('/api/fs/lastopen', { root: S.root, path: e.path }).catch(() => {});
+}
+function paintLastOpen() {
+  document.querySelectorAll('#list .row.last-open').forEach((x) => x.classList.remove('last-open'));
+  if (!S.lastOpen || S.root !== S.lastOpen.root) return;
+  document.querySelectorAll('#list .row').forEach((x) => {
+    if (x.dataset.name === S.lastOpen.name && x.dataset.name) x.classList.add('last-open');
+  });
 }
 
 // ---------- 排序 ----------
@@ -449,16 +483,18 @@ function sortEntries(list) {
 function renderList() {
   const box = $('list');
   box.innerHTML = '';
+  // 「上一级」永远占一行：根目录时置灰不可点。不占位的话，进根目录这行消失、
+  // 退出来又出现，整页列表上下跳，手还停在原位就容易点错行
+  const up = document.createElement('div');
+  up.className = 'row' + (S.path ? '' : ' disabled');
+  up.innerHTML = '<div class="ico">' + iconFor('dir') + '</div><div class="main"><div class="name">.. 上一级</div></div>';
   if (S.path) {
-    const up = document.createElement('div');
-    up.className = 'row';
-    up.innerHTML = '<div class="ico">' + iconFor('dir') + '</div><div class="main"><div class="name">.. 上一级</div></div>';
     up.addEventListener('click', () => {
       S.path = S.path.split('/').slice(0, -1).join('/');
       loadList();
     });
-    box.appendChild(up);
   }
+  box.appendChild(up);
   if (!S.entries.length) {
     box.innerHTML += '<div class="empty">这个文件夹是空的</div>';
     return;
@@ -467,17 +503,56 @@ function renderList() {
     const row = document.createElement('div');
     row.className = 'row';
     row.dataset.name = e.name;   // 「最近/收藏」跳过来靠它定位到具体那一行
+    // 「刚点开」标记：服务端记着账号最后一次点开的文件，建行时复原
+    if (S.lastOpen && !e.isDir && S.root === S.lastOpen.root &&
+        e.name === S.lastOpen.name && e.path === S.lastOpen.path) {
+      row.classList.add('last-open');
+    }
+    // 图片/视频（有 ffmpeg 时）出缩略图；加载失败退回图标（HEIC 之类解不了的格式）
+    const vis = e.thumb
+      ? '<img class="thumb" loading="lazy" alt="" src="' + thumbURL(e) + '">'
+      : iconFor(e.kind);
+    const fav = isFav(S.root, e.path);
     row.innerHTML =
-      '<div class="ico">' + iconFor(e.kind) + '</div>' +
-      '<div class="main"><div class="name">' + esc(e.name) + '</div>' +
+      '<div class="ico' + (e.thumb ? ' wide' : '') + '">' + vis + '</div>' +
+      '<div class="main"><div class="name-line">' +
+      '<span class="name">' + esc(e.name) + '</span>' +
+      // 收藏星是可点的真按钮：已收藏=金色实心常显；未收藏=灰色空心，桌面端悬停到行上才浮现
+      //（手机端不显示，免得滑动时误触收藏）。紧跟在文件名后面，不占右侧列、不影响列对齐
+      '<button class="row-star' + (fav ? '' : ' off') + '" title="' + (fav ? '已收藏，点一下取消' : '收藏') + '">' +
+      (fav ? '★' : '☆') + '</button>' +
+      '</div>' +
       '<div class="meta">' + (e.isDir ? '文件夹' : sizeText(e.size)) + ' · ' + dateText(e.mtime) + '</div></div>' +
-      (isFav(S.root, e.path) ? '<span class="row-star" title="已收藏">★</span>' : '') +
+      // col-size / col-time 只在桌面端显示（≥768px），手机端 display:none ——
+      // 同一份 DOM，两种布局各取所需，不用维护两套渲染
+      '<div class="col-size">' + (e.isDir ? '—' : sizeText(e.size)) + '</div>' +
+      '<div class="col-time">' + dateText(e.mtime) + '</div>' +
       '<button class="more">⋮</button>';
+    if (e.thumb) {
+      row.querySelector('img.thumb').addEventListener('error', function () {
+        this.parentElement.innerHTML = iconFor(e.kind);
+      });
+    }
     row.addEventListener('click', (ev) => {
-      if (ev.target.closest('.more')) return;
+      if (ev.target.closest('.more') || ev.target.closest('.row-star')) return;
       openEntry(e);
     });
     row.querySelector('.more').addEventListener('click', (ev) => { ev.stopPropagation(); openSheet(e); });
+    // 行内收藏星：点一下就地收藏/取消收藏，不用进 ⋮ 菜单翻
+    const rs = row.querySelector('.row-star');
+    rs.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      const on = await toggleFav(S.root, e.path);
+      if (on === null) return;
+      rs.classList.toggle('off', !on);
+      rs.textContent = on ? '★' : '☆';
+      rs.title = on ? '已收藏，点一下取消' : '收藏';
+    });
+    // 桌面端习惯：右键就是「对这个文件能做什么」。手机上没有右键，所以不影响手机端
+    row.addEventListener('contextmenu', (ev) => {
+      ev.preventDefault();
+      openSheet(e);
+    });
     box.appendChild(row);
   });
 }
@@ -488,12 +563,19 @@ function openEntry(e) {
     loadList();
     return;
   }
+  // 下载类的点击也标一下（看/听/文本在各自预览里标，这里补其余类型）
   if (e.kind === 'video' || e.kind === 'image' || e.kind === 'audio') {
     openViewer(e);
     return;
   }
+  const dl = '/api/fs/download?' + q(S.root, e.path);
+  if (isTextFile(e.name)) {
+    openTextViewer(e, dl);
+    return;
+  }
+  markLastOpen(e);
   if (confirm('下载「' + e.name + '」到本机？')) {
-    location.href = '/api/fs/download?' + q(S.root, e.path);
+    location.href = dl;
   }
 }
 
@@ -506,6 +588,25 @@ const REMUX_VIDEO = /\.(mkv|avi|ts|m2ts|mts|flv|wmv|rmvb|rm|divx|f4v|ogv|vob|mpg
 // 外部播放器没有我们的 cookie，所以走服务端签发的短期签名直链。
 const PLAYER_BTN = '<button class="btn sm" data-open-player title="用手机上的播放器打开">播放器打开</button>';
 let viewerEntry = null;
+
+// 复制文本：局域网访问是 http（非 secure context），navigator.clipboard 在那种环境下
+// 根本不存在，execCommand 兜底才是主路径。textarea 必须 opacity:0 但保持可选中布局
+// （不能 clip:rect 隐藏——选区宽 0 会复制到空串还返回 true，假成功）。
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(text); return true; } catch (e) {}
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;';
+    document.body.appendChild(ta);
+    ta.focus(); ta.select(); ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch (e) { return false; }
+}
 
 async function openInPlayer() {
   const e = viewerEntry;
@@ -522,16 +623,20 @@ async function openInPlayer() {
     return;
   }
   const url = r.data.url;
-  let copied = false;
-  try {
-    await navigator.clipboard.writeText(url);
-    copied = true;
-  } catch (err) {}
   clog('生成播放器直链 ' + e.name + ' ttl=' + r.data.ttl);
-  // iOS 上先试一把 VLC：装了就会直接打开并开播；没装则静默失败，链接已在剪贴板
+  const copied = await copyText(url);
+  // iOS 上再试一把唤起 VLC：走 iframe 携带 x-callback——装了 VLC 会直接打开并开播；
+  // 没装则静默失败。不能用 location.href：没装时 Safari 会弹「打不开该地址」的报错页，
+  // 用户看到的就是「浏览器报错、链接打不开」。
   if (/iPhone|iPad|iPod/.test(navigator.userAgent)) {
-    try { window.location.href = 'vlc-x-callback://x-callback-url/stream?url=' + encodeURIComponent(url); } catch (err) {}
-    toast(copied ? '链接已复制：没装 VLC 就粘到播放器的「打开 URL」里' : '请手动复制链接');
+    try {
+      const f = document.createElement('iframe');
+      f.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;border:0;';
+      f.src = 'vlc-x-callback://x-callback-url/stream?url=' + encodeURIComponent(url);
+      document.body.appendChild(f);
+      setTimeout(() => f.remove(), 3000);
+    } catch (err) {}
+    toast(copied ? '链接已复制：装了 VLC 会自动唤起，没装就粘到播放器的「打开 URL」' : '自动复制被浏览器拦了，长按链接手动复制');
     return;
   }
   toast(copied ? '直链已复制，粘到播放器的「打开网络串流」' : '请手动复制链接');
@@ -540,12 +645,17 @@ async function openInPlayer() {
 function openViewer(e) {
   viewerEntry = e;
   noteRecent(e);            // 打开就算"看过"，记一笔（服务端落库，跟账号绑定）
+  markLastOpen(e);          // 同时把「刚点开」标记落库 + 挂到列表那一行
   syncViewerFav();
   $('viewerName').textContent = e.name;
+  $('viewerRot').style.visibility = '';   // 文本预览会隐藏它，回到图片/视频得还原
   const body = $('viewerBody');
   const foot = $('viewerFoot');
   foot.innerHTML = '';
   const dl = '/api/fs/download?' + q(S.root, e.path);
+  // 防御性复位：fs 是沉浸全屏态（会把顶栏和底部条一起藏掉）。
+  // 万一有哪条路径加上去没退干净，新打开的预览就会「顶栏按钮消失」，这里一次性清掉。
+  $('viewer').classList.remove('fs');
   $('viewer').classList.add('on');
   if (e.kind === 'image') {
     body.innerHTML = '<img src="' + dl + '&inline=1" alt="">';
@@ -562,6 +672,233 @@ function openViewer(e) {
   } else {
     body.innerHTML = '<div class="viewer-msg">这个类型不能预览</div>';
     foot.innerHTML = '<a class="btn" href="' + dl + '">下载到本机</a>';
+  }
+}
+
+// ---------- 文本预览 ----------
+//
+// txt / markdown / 代码 / 配置这类文件，点了直接在网页里看——手机上查个笔记、
+// 看眼日志、翻翻配置，不用下载。只读不改：在外面改文件既容易误触保存覆盖原文件，
+// 也没有在电脑上改顺手，需要改就下载或回到电脑上。
+const TEXT_EXT = /\.(txt|md|markdown|log|json|yaml|yml|ini|conf|cfg|toml|env|properties|bat|cmd|sh|ps1|py|go|js|ts|css|html|htm|xml|csv|sql|gitignore|java|c|cpp|h|hpp|rs|php|rb|vue|jsx|tsx)$/i;
+const TEXT_MAX = 2 * 1024 * 1024;   // 超过 2MB 不读进内存，网页拖着累
+
+function isTextFile(name) {
+  return TEXT_EXT.test(name) || !/\.[a-z0-9]{1,8}$/i.test(name);   // 无扩展名（README、Makefile）也试一把，二进制检测会拦住
+}
+
+// 够用的 Markdown 渲染：标题/列表/引用/代码块/粗斜体/行内代码/链接/分隔线。
+// 先整体转义再打标记，原文里的 <script> 之类不会被当 HTML 执行
+// Markdown → HTML。先整体 esc 再打标记（XSS 安全），只做白名单内的转换。
+// resolveImg(src)：把图片地址换算成可访问的 URL —— http(s) 外链原样；
+// 相对路径按 md 所在目录拼 /api/fs/download；「F:\…」这类带盘符的绝对路径落到对应根目录。
+function renderMarkdown(src, resolveImg) {
+  // ── 原生 HTML 白名单直通 ──
+  // GitHub 风格的 README 大量用 <img>/<table>/<td width>/<sub>/<b>/<br> 排版，
+  // 全部 esc 会变成一堆代码文本（用户看到的"图片是 HTML 代码"就是这个）。
+  // 做法：先把白名单标签摘出来换成占位符，其余文本照旧 esc，最后原样还原。
+  // 占位符用 \x00 包裹，esc 只转义 &<>"'，不会碰到它。
+  // 白名单之外的标签（script/iframe/onclick 属性…）不占位，依旧被 esc 成代码显示。
+  const store = [];
+  const stash = (html, kind) => '\x00' + kind + (store.push(html) - 1) + '\x00';
+  // 结构标签重新生成，只保留 td/th 的 width/align，onclick/style 之类全部剥掉
+  const structural = (tag) => {
+    const open = tag.match(/^<(td|th)\b([^>]*)>/i);
+    if (open) {
+      let attrs = '';
+      const w = (open[2].match(/width\s*=\s*["']([^"']*)["']/i) || [])[1];
+      const al = (open[2].match(/align\s*=\s*["']([^"']*)["']/i) || [])[1];
+      if (w) attrs += ' width="' + esc(w) + '"';
+      if (al) attrs += ' align="' + esc(al) + '"';
+      return '<' + open[1].toLowerCase() + attrs + '>';
+    }
+    const m = tag.match(/^<(\/?)([a-zA-Z0-9]+)/);
+    return '<' + (m[1] || '') + m[2].toLowerCase() + '>';
+  };
+  const attrVal = (attrs, name) => {
+    const m = attrs.match(new RegExp(name + '\\s*=\\s*"([^"]*)"', 'i'))
+      || attrs.match(new RegExp(name + "\\s*=\\s*'([^']*)'", 'i'))
+      || attrs.match(new RegExp(name + '\\s*=\\s*([^\\s>]+)', 'i'));
+    return m ? m[1] : '';
+  };
+  src = String(src)
+    // <img>：重新拼一个干净的 img，src 走图片解析器；解析不了就不占位（留在原文里被 esc 显示）
+    .replace(/<img\b([^>]*)>/gi, (all, attrs) => {
+      const rawSrc = attrVal(attrs, 'src');
+      const url = rawSrc && resolveImg ? resolveImg(rawSrc) : '';
+      if (!url) return all;
+      return stash('<img class="md-img" loading="lazy" src="' + url + '" alt="' + esc(attrVal(attrs, 'alt')) + '">', 'I');
+    })
+    .replace(/<(br|hr)\b[^>]*\/?>/gi, (t) => stash(structural(t), 'I'))
+    .replace(/<(\/?)(table|thead|tbody|tfoot|tr|td|th|sub|sup|b|strong|i|em|u|center|kbd)\b[^>]*>/gi, (t) => {
+      const block = /^<(\/?)(table|thead|tbody|tfoot|tr|td|th)\b/i.test(t);
+      return stash(structural(t), block ? 'B' : 'I');
+    });
+
+  const lines = esc(src).split(/\r?\n/);
+  // 链接 href 只放行 http(s)/站内/锚点，javascript: 之类直接降级成纯文本
+  const safeHref = (u) => (/^(https?:|\/|#)/i.test(u) ? u : null);
+  // 地址里允许一层成对括号（wiki 链接常见 .../foo_(bar)），否则 javascript:alert(1) 会漏出半个括号
+  const TARGET = '((?:[^()\\s]|\\([^()\\s]*\\))+)';
+  const imgRe = new RegExp('!\\[([^\\]]*)\\]\\(' + TARGET + '\\)', 'g');
+  const linkRe = new RegExp('\\[([^\\]]+)\\]\\(' + TARGET + '\\)', 'g');
+  const inline = (s) => s
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    // 图片要先于链接处理，否则 ![alt](src) 会被链接规则吃掉只留下 "!"
+    .replace(imgRe, (all, alt, src) => {
+      const url = resolveImg ? resolveImg(src) : '';
+      return url ? '<img class="md-img" loading="lazy" alt="' + alt + '" src="' + url + '">' : all;
+    })
+    .replace(linkRe, (all, text, href) => {
+      const u = safeHref(href);
+      return u ? '<a href="' + u + '" target="_blank" rel="noopener">' + text + '</a>' : text;
+    })
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  // GFM 竖线表格：| a | b | 分隔行 | --- | --- |，整块转 <table>
+  const tableCells = (row) => row.trim().replace(/^\|/, '').replace(/\|$/, '')
+    .split('|').map((c) => inline(c.trim()));
+  const isSep = (l) => /^\s*\|?[\s:|-]+\|?\s*$/.test(l) && /-/.test(l) && /\|/.test(l);
+
+  // 一段行数组 → HTML。抽成函数是为了让引用块能递归：连续的 &gt; 行剥掉前缀后当普通文档再跑一遍，
+  // 这样「> 里的代码块/列表」才能正常渲染（原来每行各包一个 <blockquote>，里面的 ``` 会原样露出来）
+  const render = (arr) => {
+    const out = [];
+    let list = null, code = null;
+    const closeList = () => { if (list) { out.push('</' + list + '>'); list = null; } };
+    for (let i = 0; i < arr.length; i++) {
+      const raw = arr[i];
+      const t = raw.trim();
+      // 原生 HTML 的行（整行都是结构占位符，可能夹杂图片占位符）：原样输出、不包 <p>，
+      // 否则表格结构被段落拆散，浏览器渲染出来的版式会乱
+      if (/^\x00B\d+\x00/.test(t) && !t.replace(/\x00[BI]\d+\x00/g, '').trim()) {
+        closeList();
+        out.push(raw);
+        continue;
+      }
+      if (/^```/.test(t)) {
+        if (code !== null) { out.push('<pre class="md-code">' + code.join('\n') + '</pre>'); code = null; }
+        else { closeList(); code = []; }
+        continue;
+      }
+      if (code !== null) { code.push(raw); continue; }
+      if (!t) { closeList(); continue; }
+      let m;
+      if ((m = t.match(/^(#{1,6})\s+(.*)$/))) { closeList(); const lv = m[1].length; out.push('<h' + lv + '>' + inline(m[2]) + '</h' + lv + '>'); continue; }
+      if (/^(-{3,}|\*{3,})$/.test(t)) { closeList(); out.push('<hr>'); continue; }
+      // 引用块：把连续的 &gt; 行整段收进来，剥掉前缀递归渲染，再包一层 <blockquote>
+      if (/^&gt;/.test(t)) {
+        closeList();
+        const inner = [];
+        let j = i;
+        while (j < arr.length && /^\s*&gt;/.test(arr[j])) {
+          inner.push(arr[j].replace(/^\s*&gt;\s?/, ''));
+          j++;
+        }
+        out.push('<blockquote>' + render(inner) + '</blockquote>');
+        i = j - 1;
+        continue;
+      }
+      if (/\|/.test(t) && i + 1 < arr.length && isSep(arr[i + 1])) {
+        const head = tableCells(t);
+        if (head.length) {
+          const rows = [];
+          let j = i + 2;
+          while (j < arr.length && arr[j].trim() && /\|/.test(arr[j])) { rows.push(tableCells(arr[j])); j++; }
+          closeList();
+          out.push('<div class="md-tablewrap"><table><thead><tr>'
+            + head.map((h) => '<th>' + h + '</th>').join('')
+            + '</tr></thead><tbody>'
+            + rows.map((r) => '<tr>' + r.map((c) => '<td>' + c + '</td>').join('') + '</tr>').join('')
+            + '</tbody></table></div>');
+          i = j - 1;
+          continue;
+        }
+      }
+      if ((m = t.match(/^[-*]\s+(.*)$/))) { if (list !== 'ul') { closeList(); out.push('<ul>'); list = 'ul'; } out.push('<li>' + inline(m[1]) + '</li>'); continue; }
+      if ((m = t.match(/^\d+[.)]\s+(.*)$/))) { if (list !== 'ol') { closeList(); out.push('<ol>'); list = 'ol'; } out.push('<li>' + inline(m[1]) + '</li>'); continue; }
+      closeList();
+      out.push('<p>' + inline(t) + '</p>');
+    }
+    if (code !== null && code.length) out.push('<pre class="md-code">' + code.join('\n') + '</pre>');
+    closeList();
+    return out.join('');
+  };
+
+  // 还原白名单 HTML 占位符
+  return render(lines).replace(/\x00([BI])(\d+)\x00/g, (m, k, i) => store[+i]);
+}
+
+// Markdown 里的图片地址 → 可访问 URL。
+//   http(s) 外链                     → 原样
+//   相对路径 ./x.png、img/x.png、../img/x.png → 按 md 所在目录拼 /api/fs/download
+//   「F:\…」带盘符的绝对路径          → 找到对应根目录后拼 download（找不到就不渲染，保留原文）
+// 都先经过 esc 了，地址里不会带引号，直接拼进 src 属性是安全的
+function mdImgResolver(e) {
+  return (src) => {
+    let s = src.replace(/\\/g, '/');
+    const dm = s.match(/^([a-zA-Z]):\/(.*)$/);
+    if (dm) {
+      const r = S.roots.find((x) => (x.drive || '').replace(/:/g, '').toLowerCase() === dm[1].toLowerCase());
+      if (!r) return '';
+      // 根目录若不是盘根（比如 F:\docs），要把这段前缀从图片路径里去掉
+      const pre = (r.path || '').replace(/\\/g, '/').replace(/\/+$/, '').replace(/^[a-zA-Z]:/, '').replace(/^\/+/, '');
+      let rel = dm[2];
+      if (pre && rel.toLowerCase().startsWith(pre.toLowerCase() + '/')) rel = rel.slice(pre.length + 1);
+      return '/api/fs/download?' + q(r.path, rel);
+    }
+    if (/^(https?:)?\/\//i.test(s)) return s;
+    const segs = e.path.split('/').slice(0, -1).filter(Boolean);
+    let p = s.replace(/^\.\//, '');
+    while (/^\.\.\//.test(p)) { p = p.slice(3); segs.pop(); }
+    p = p.replace(/^\/+/, '');
+    return '/api/fs/download?' + q(S.root, segs.concat(p.split('/')).join('/'));
+  };
+}
+
+async function openTextViewer(e, dl) {
+  viewerEntry = e;
+  noteRecent(e);
+  markLastOpen(e);
+  syncViewerFav();
+  $('viewerName').textContent = e.name;
+  $('viewerRot').style.visibility = 'hidden';   // 旋转是给图片用的，文本用不上
+  const body = $('viewerBody');
+  const foot = $('viewerFoot');
+  foot.innerHTML = '<a class="btn" href="' + dl + '">下载到本机</a>';
+  body.innerHTML = '<div class="viewer-msg">正在读取…</div>';
+  $('viewer').classList.remove('fs');   // 同 openViewer：清掉可能残留的沉浸态
+  $('viewer').classList.add('on');
+  try {
+    const res = await fetch(dl + '&inline=1', { credentials: 'same-origin' });
+    if (!res.ok) throw new Error('读取失败（' + res.status + '）');
+    const blob = await res.blob();
+    if (blob.size > TEXT_MAX) {
+      body.innerHTML = '<div class="viewer-msg">文件超过 2 MB，不做在线预览<br>点下面的「下载到本机」看</div>';
+      return;
+    }
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    // 二进制检测：开头 8KB 出现 NUL 字节就当二进制，不硬猜编码
+    let bin = false;
+    for (let i = 0; i < Math.min(buf.length, 8192); i++) { if (buf[i] === 0) { bin = true; break; } }
+    if (bin) {
+      body.innerHTML = '<div class="viewer-msg">这是个二进制文件，不支持预览<br>点下面的「下载到本机」看</div>';
+      return;
+    }
+    // 编码：先按 UTF-8 解；乱码字符多（GBK 中文文件常见）就换 GBK 再解一遍，替换符少的赢
+    let text = new TextDecoder('utf-8').decode(buf);
+    const bad8 = (text.match(/\uFFFD/g) || []).length;
+    if (bad8 > 0) {
+      try {
+        const g = new TextDecoder('gbk').decode(buf);
+        if ((g.match(/\uFFFD/g) || []).length < bad8) text = g;
+      } catch (err) { /* 浏览器不支持 gbk 就用 utf-8 的结果 */ }
+    }
+    body.innerHTML = /\.(md|markdown)$/i.test(e.name)
+      ? '<div class="textview mdview">' + renderMarkdown(text, mdImgResolver(e)) + '</div>'
+      : '<pre class="textview">' + esc(text) + '</pre>';
+  } catch (err) {
+    body.innerHTML = '<div class="viewer-msg">读取失败：' + esc(err.message || '连不上服务端') + '</div>';
   }
 }
 
@@ -652,6 +989,7 @@ function hookNativeRotate(v, fetchRotated) {
 
 function mountVideo(src) {
   const host = $('viewerBody');
+  saveCurrentProgress();   // 换源（转码兜底/换清晰度）前把旧 video 的进度存掉
   host.innerHTML =
     '<video src="' + src + '" controls autoplay playsinline webkit-playsinline preload="metadata"></video>';
   const v = host.querySelector('video');
@@ -659,7 +997,118 @@ function mountVideo(src) {
   v.addEventListener('error', () => {
     host.innerHTML = '<div class="viewer-msg">这个文件解不开（可能是损坏或不支持的编码）。</div>';
   });
+  hookProgress(v);
   return v;
+}
+
+// ---------- 播放进度记忆 ----------
+//
+// 进度存服务端库（跟账号走，换手机也能续上），与「最近 / 收藏」同一口径。
+// 规则：
+//   · 打开时拉一次：上次位置 > 30s 且离结尾 > 90s 才跳过去，别打断正常观看；
+//   · 播放中每 5 秒节流上报一次，暂停 / 关掉播放器立刻上报；
+//   · 看完（ended）或拖回开头（pos≤0）即删记录，下次从头放。
+// 所有视频路径（原画质 / 转码缓存 / 流式转码）都走 mountVideo，钩子只挂这一处。
+
+function hookProgress(v) {
+  let lastSave = 0;
+  v.addEventListener('loadedmetadata', async () => {
+    const e = viewerEntry;
+    // 一分钟以内的短片不值得记，看完就完了
+    if (!e || !isFinite(v.duration) || v.duration < 60) return;
+    try {
+      const r = await api('/api/fs/progress?' + q(S.root, e.path));
+      // 返回时可能已经切了别的文件，别把 A 片的位置跳到 B 片上
+      if (r.code !== 0 || !r.data || !viewerEntry || viewerEntry.path !== e.path) return;
+      const pos = +r.data.pos || 0;
+      if (pos > 30 && pos < v.duration - 90) {
+        try {
+          v.currentTime = pos;
+          toast('已从上次位置继续播放');
+        } catch (err) { /* 个别浏览器 metadata 后立即 seek 会抛，忽略 */ }
+      }
+    } catch (err) { /* 拉不到就从头放，对用户无感 */ }
+  }, { once: true });
+  v.addEventListener('timeupdate', () => {
+    const now = Date.now();
+    if (now - lastSave < 5000) return;
+    lastSave = now;
+    saveVideoProgress(v);
+  });
+  v.addEventListener('pause', () => saveVideoProgress(v));
+  v.addEventListener('ended', () => {
+    const e = viewerEntry;
+    if (e) api('/api/fs/progress', { root: S.root, path: e.path, pos: 0, dur: 0 }).catch(() => {});
+  });
+}
+
+function saveVideoProgress(v) {
+  const e = viewerEntry;
+  if (!e || !v || !v.isConnected) return;
+  if (!isFinite(v.currentTime) || v.currentTime <= 0) return;
+  api('/api/fs/progress', {
+    root: S.root, path: e.path,
+    pos: Math.floor(v.currentTime), dur: Math.floor(v.duration || 0),
+  }).catch(() => {});
+}
+
+function saveCurrentProgress() {
+  const v = viewerVideo();
+  if (v) saveVideoProgress(v);
+}
+
+// ffmpeg 引导安装的前端：发起 → 轮询进度 → 成功后重走 playRemux 续播。
+// 失败时给出原因 + 手动安装说明（把 ffmpeg.exe / ffprobe.exe 放到 selfnas.exe 旁边即可）。
+function startFFGuide(e, dl) {
+  const box = $('ffBox');
+  const fmtMB = (n) => (n / 1048576).toFixed(1) + 'MB';
+  const btn = document.createElement('button');
+  btn.className = 'btn primary';
+  btn.textContent = '立即安装并播放';
+  box.appendChild(btn);
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.textContent = '正在发起安装…';
+    try {
+      const r = await api('/api/ffmpeg/install', {});
+      if (r.code !== 0) throw new Error(r.msg || '未知错误');
+    } catch (err) {
+      box.innerHTML = '<div style="opacity:.65;font-size:13px">安装发起失败：' + err.message + '</div>';
+      btn.disabled = false;
+      btn.textContent = '重试安装';
+      return;
+    }
+    // 轮询进度。running=false 且 stage=done 且无 error 才算成功，
+    // 其余 running=false 的情况都是失败（stage 停在哪一步就是哪一步出的错）。
+    for (;;) {
+      await new Promise((ok) => setTimeout(ok, 700));
+      let st;
+      try {
+        st = (await api('/api/ffmpeg/status')).data;
+      } catch (err) { continue; } // 单次轮询抖动不终止，下一轮再看
+      if (!st) continue;
+      if (st.stage === 'download' && st.total > 0) {
+        const pct = Math.min(100, Math.round((st.bytes * 100) / st.total));
+        btn.textContent = '下载中 ' + pct + '%（' + fmtMB(st.bytes) + ' / ' + fmtMB(st.total) + '）';
+      } else if (st.stage === 'extract') {
+        btn.textContent = '解压中…';
+      } else if (st.stage === 'verify') {
+        btn.textContent = '校验中…';
+      }
+      if (st.running) continue;
+      if (st.stage === 'done' && !st.error) {
+        toast('ffmpeg 安装完成');
+        playRemux(e, dl); // 重走一遍：这次 playinfo 会返回 ffmpeg=true，自动续播
+        return;
+      }
+      box.innerHTML =
+        '<div style="opacity:.65;font-size:13px">安装失败：' + (st.error || '未知原因') +
+        '<br>可手动下载 ffmpeg，把 ffmpeg.exe 和 ffprobe.exe 放到 selfnas.exe 同目录即可。</div>';
+      btn.disabled = false;
+      btn.textContent = '重试安装';
+      return;
+    }
+  });
 }
 
 // 想要「像 App 一样能拖进度」，光靠流式推是不行的 —— 流里没有索引，浏览器不知道往哪跳。
@@ -681,8 +1130,15 @@ async function playRemux(e, dl) {
     return;
   }
   if (!info.ffmpeg) {
-    body.innerHTML = '<div class="viewer-msg">服务器上没有 ffmpeg，这个格式没法在线播放。<br>下载到手机用播放器打开吧。</div>';
-    foot.innerHTML = '<a class="btn" href="' + dl + '">下载到本机</a>';
+    // 播放器内引导安装：服务器没 ffmpeg 时不把用户直接推去下载页，
+    // 就在这个弹层里问一句「要不要装」——同意就自动下载 → 解压 → 校验 → 接着播。
+    // 在疼的地方给药：用户点 MKV 播不了的那一刻才需要它，装一次永久生效。
+    body.innerHTML =
+      '<div class="viewer-msg">这个格式在线播放需要服务器安装 ffmpeg。<br>' +
+      '<span style="opacity:.65;font-size:13px">约 80MB，下载一次永久生效，完成后自动继续播放</span>' +
+      '<div id="ffBox" style="margin-top:14px"></div></div>';
+    foot.innerHTML = '<a class="btn" href="' + dl + '">仅下载文件</a>';
+    startFFGuide(e, dl);
     return;
   }
   const hevcOK = canPlayHevc();
@@ -988,6 +1444,7 @@ function closeViewer() {
   exitFs();
   rotManual = false;
   $('viewerRot').classList.remove('on');
+  saveCurrentProgress();   // 关掉播放器前把进度存一下，下次接着看
   const body = $('viewerBody');
   // 先把 src 摘掉再清 DOM：网络流不会自己断，不主动断的话服务端的 ffmpeg 会一直转下去
   body.querySelectorAll('video, audio').forEach((m) => {
@@ -1117,13 +1574,16 @@ $('promptOk').addEventListener('click', async () => {
 });
 $('promptInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('promptOk').click(); });
 
-$('btnMkdir').addEventListener('click', () => {
-  if (S.readonly) { toast('该目录为只读'); return; }
-  askText('新建文件夹', '', async (val) => {
-    const r = await api('/api/fs/mkdir', { root: S.root, dir: S.path, name: val });
-    toast(r.msg);
-    if (r.code === 0) loadList();
-    return r.code === 0;
+// 新建文件夹：底部栏（手机）和顶栏（桌面）各有一个按钮，靠 data-mkdir 一起绑
+document.querySelectorAll('[data-mkdir]').forEach((b) => {
+  b.addEventListener('click', () => {
+    if (S.readonly) { toast('该目录为只读'); return; }
+    askText('新建文件夹', '', async (val) => {
+      const r = await api('/api/fs/mkdir', { root: S.root, dir: S.path, name: val });
+      toast(r.msg);
+      if (r.code === 0) loadList();
+      return r.code === 0;
+    });
   });
 });
 
@@ -1173,9 +1633,45 @@ function beginPick(inputId, tag) {
   return true;
 }
 
-$('btnUpload').addEventListener('click', (e) => {
-  if (!beginPick('filePicker', '照片/系统选择器')) e.preventDefault();
+// 上传入口同样有两份（手机底部栏 / 桌面顶栏），共用同一个 filePicker
+document.querySelectorAll('[data-upload]').forEach((b) => {
+  b.addEventListener('click', (e) => {
+    if (!beginPick('filePicker', '照片/系统选择器')) e.preventDefault();
+  });
 });
+
+// 桌面端拖拽上传：把文件从资源管理器拖进页面，松手就传，复用同一套分片队列。
+// 手机上不存在拖拽事件，这段代码在手机端等于不存在。
+(function initDragDrop() {
+  const hint = document.createElement('div');
+  hint.className = 'drop-hint';
+  hint.innerHTML = '<div class="drop-hint-box">松手即可上传到当前目录</div>';
+  document.body.appendChild(hint);
+  let depth = 0;      // 子元素会连续触发 enter/leave，用计数避免提示闪
+  const hasFile = (e) => !!(e.dataTransfer && Array.from(e.dataTransfer.types || []).indexOf('Files') >= 0);
+  window.addEventListener('dragenter', (e) => {
+    if (!hasFile(e)) return;
+    depth++;
+    hint.classList.add('on');
+  });
+  window.addEventListener('dragover', (e) => {
+    if (!hasFile(e)) return;
+    e.preventDefault();   // 不拦的话浏览器会直接打开文件
+  });
+  window.addEventListener('dragleave', () => {
+    depth = Math.max(0, depth - 1);
+    if (!depth) hint.classList.remove('on');
+  });
+  window.addEventListener('drop', (e) => {
+    if (!hasFile(e)) return;
+    e.preventDefault();
+    depth = 0;
+    hint.classList.remove('on');
+    if (S.readonly) { toast('该目录为只读'); return; }
+    const files = e.dataTransfer && e.dataTransfer.files;
+    if (files && files.length) handleFiles(files, 'drop');
+  });
+})();
 
 let lastHandledSig = '';
 let lastHandledAt = 0;
@@ -1221,16 +1717,17 @@ let pickTimer = null;
 // 把「读取中 12s」写在它身上，既不用移动视线，也不会挡住列表。
 const BTN_UPLOAD_TEXT = '上传文件';
 function paintPickButton() {
-  const b = $('btnUpload');
-  if (!b || b.textContent === undefined) return;
-  if (picking) {
-    const s = pickStartAt ? Math.floor((Date.now() - pickStartAt) / 1000) : 0;
-    b.textContent = s >= 1 ? '读取中 ' + s + 's' : '读取中…';
-    b.classList.add('busy');
-  } else {
-    b.textContent = BTN_UPLOAD_TEXT;
-    b.classList.remove('busy');
-  }
+  // 所有上传按钮（手机底部栏 + 桌面顶栏）同步显示等待状态
+  document.querySelectorAll('[data-upload]').forEach((b) => {
+    if (picking) {
+      const s = pickStartAt ? Math.floor((Date.now() - pickStartAt) / 1000) : 0;
+      b.textContent = s >= 1 ? '读取中 ' + s + 's' : '读取中…';
+      b.classList.add('busy');
+    } else {
+      b.textContent = BTN_UPLOAD_TEXT;
+      b.classList.remove('busy');
+    }
+  });
 }
 function sigOf(files) {
   return Array.from(files).map((f) => f.name + ':' + f.size + ':' + f.lastModified).join('|');
@@ -1761,12 +2258,294 @@ document.querySelectorAll('#sortBar [data-sort]').forEach((b) => {
 renderSort();
 
 
+// ---------- 分享海报 ----------
+//
+// 一张竖版推广图：项目介绍 + 功能点 + 插画 + GitHub 二维码 + 链接。
+// 为什么用 canvas 手绘而不是让 AI 画整张：
+//   ① **二维码必须是真码** —— 生成式模型画出来的码扫不出来，只能贴真实 PNG；
+//   ② 文字要清晰锐利、排版要稳，AI 画中文字经常缺笔画；
+//   ③ 插画单独用 ComfyUI 生成（无文字、纯装饰），只占中间一块，画歪了也不影响信息。
+// 画完转成 <img> 展示：手机上 canvas 长按不弹菜单，img 才能“长按保存”。
+
+const POSTER_W = 1080;
+const POSTER_H = 1620;
+const POSTER_QR_URL = 'https://github.com/sylvesterzhang/selfnas';
+let posterImgs = null;   // 图片只加载一次，反复打开不必重下
+
+function loadImg(src) {
+  return new Promise((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = () => reject(new Error('图片加载失败: ' + src));
+    im.src = src;
+  });
+}
+
+function roundRectPath(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// 按最大宽度/高度等比缩放，返回绘制用的 w/h
+function fitBox(img, maxW, maxH) {
+  const k = Math.min(maxW / img.width, maxH / img.height);
+  return { w: Math.round(img.width * k), h: Math.round(img.height * k) };
+}
+
+async function renderPoster() {
+  if (!posterImgs) {
+    posterImgs = await Promise.all([
+      loadImg('/assets/img/poster-art.png'),
+      loadImg('/assets/img/github-qr.png'),
+    ]);
+  }
+  const [art, qr] = posterImgs;
+
+  const cv = document.createElement('canvas');
+  cv.width = POSTER_W;
+  cv.height = POSTER_H;
+  const c = cv.getContext('2d');
+
+  // —— 背景：浅色渐变 + 右上角淡色光斑
+  const bg = c.createLinearGradient(0, 0, POSTER_W * 0.4, POSTER_H);
+  bg.addColorStop(0, '#ffffff');
+  bg.addColorStop(0.55, '#f5f9fd');
+  bg.addColorStop(1, '#eaf3fb');
+  c.fillStyle = bg;
+  c.fillRect(0, 0, POSTER_W, POSTER_H);
+
+  c.save();
+  const glow = c.createRadialGradient(POSTER_W - 60, 120, 20, POSTER_W - 60, 120, 520);
+  glow.addColorStop(0, 'rgba(24, 95, 165, 0.13)');
+  glow.addColorStop(1, 'rgba(24, 95, 165, 0)');
+  c.fillStyle = glow;
+  c.fillRect(0, 0, POSTER_W, 700);
+  c.restore();
+
+  const FONT = '"Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", -apple-system, sans-serif';
+
+  // —— 标题
+  c.fillStyle = '#0f1b2d';
+  c.font = '700 104px ' + FONT;
+  c.textBaseline = 'alphabetic';
+  c.fillText('selfnas', 96, 258);
+
+  // 标题右侧的小标签
+  c.font = '400 30px ' + FONT;
+  const tag = '私有文件站';
+  const tagW = c.measureText(tag).width + 40;
+  roundRectPath(c, POSTER_W - 96 - tagW, 198, tagW, 56, 28);
+  c.fillStyle = 'rgba(24, 95, 165, 0.10)';
+  c.fill();
+  c.fillStyle = '#185fa5';
+  c.fillText(tag, POSTER_W - 96 - tagW + 20, 236);
+
+  // —— 一句话说完它是干什么的
+  c.fillStyle = '#1e2a3a';
+  c.font = '600 46px ' + FONT;
+  c.fillText('把电脑变成你自己的文件中心', 96, 348);
+
+  c.fillStyle = '#64748b';
+  c.font = '400 32px ' + FONT;
+  c.fillText('不用装 App，不用上传网盘——手机浏览器打开就能用', 96, 408);
+
+  // —— 插画（AI 生成，无文字，只做装饰）
+  // 插画自带浅色背景，直接贴会露出一块方形色差；套一张白底圆角卡片，
+  // 边界就变成"设计上的卡片"而不是"补丁"
+  const box = fitBox(art, 850, 460);
+  const cardX = (POSTER_W - box.w) / 2 - 16;
+  const cardW = box.w + 32;
+  const cardTop = 456;
+  const cardHt = box.h + 32;
+  c.save();
+  c.shadowColor = 'rgba(15, 27, 45, 0.08)';
+  c.shadowBlur = 26;
+  c.shadowOffsetY = 8;
+  roundRectPath(c, cardX, cardTop, cardW, cardHt, 28);
+  c.fillStyle = '#ffffff';
+  c.fill();
+  c.restore();
+  c.save();
+  roundRectPath(c, cardX + 1, cardTop + 1, cardW - 2, cardHt - 2, 27);
+  c.clip();
+  c.drawImage(art, (POSTER_W - box.w) / 2, cardTop + 16, box.w, box.h);
+  c.restore();
+
+  // —— 三个功能点
+  const feats = [
+    ['躺着看片', '手机直接播放电脑里的电影，MKV 也能放'],
+    ['拍完就传', '手机照片视频一键传回电脑，接着剪辑修图'],
+    ['随手就翻', '家里任意一块硬盘，都能用手机直接翻'],
+  ];
+  let fy = 1030;
+  feats.forEach(([title, desc]) => {
+    // 勾选圆点
+    c.beginPath();
+    c.arc(118, fy - 12, 17, 0, Math.PI * 2);
+    c.fillStyle = '#185fa5';
+    c.fill();
+    c.strokeStyle = '#fff';
+    c.lineWidth = 4;
+    c.lineCap = 'round';
+    c.beginPath();
+    c.moveTo(110, fy - 12);
+    c.lineTo(116, fy - 6);
+    c.lineTo(127, fy - 19);
+    c.stroke();
+
+    c.fillStyle = '#0f1b2d';
+    c.font = '600 36px ' + FONT;
+    c.fillText(title, 158, fy);
+    const tw = c.measureText(title).width;
+    c.fillStyle = '#64748b';
+    c.font = '400 32px ' + FONT;
+    c.fillText('　' + desc, 158 + tw, fy);
+    fy += 74;
+  });
+
+  // —— 二维码卡片
+  const cardY = 1236;
+  const cardH = 288;
+  c.save();
+  c.shadowColor = 'rgba(15, 27, 45, 0.10)';
+  c.shadowBlur = 32;
+  c.shadowOffsetY = 10;
+  roundRectPath(c, 96, cardY, POSTER_W - 192, cardH, 28);
+  c.fillStyle = '#ffffff';
+  c.fill();
+  c.restore();
+
+  // 二维码本体（真码，扫了直接到 GitHub）。
+  // 源图 512px，这里画 256px —— **正好 1/2 的整数倍缩放**，每个模块边缘不产生小数抗锯齿，
+  // 扫描识别率最高；随手给个 0.37 倍反而会发虚。
+  const qrSize = 256;
+  const qrX = 132;
+  const qrY = cardY + (cardH - qrSize) / 2;
+  c.fillStyle = '#ffffff';
+  c.fillRect(qrX, qrY, qrSize, qrSize);
+  c.drawImage(qr, qrX, qrY, qrSize, qrSize);
+
+  const tx = qrX + qrSize + 40;
+  const textW = 96 + (POSTER_W - 192) - tx - 24;   // 卡片右侧可用宽度，超了就是出框
+  c.fillStyle = '#0f1b2d';
+  let fs = 38;
+  c.font = '700 ' + fs + 'px ' + FONT;
+  while (c.measureText('扫码看源码，完全开源免费').width > textW && fs > 24) {
+    fs -= 2;
+    c.font = '700 ' + fs + 'px ' + FONT;
+  }
+  c.fillText('扫码看源码，完全开源免费', tx, cardY + 90);
+
+  c.fillStyle = '#185fa5';
+  fs = 24;
+  c.font = '400 ' + fs + 'px ui-monospace, Consolas, monospace';
+  while (c.measureText('github.com/sylvesterzhang/selfnas').width > textW && fs > 16) {
+    fs -= 1;
+    c.font = '400 ' + fs + 'px ui-monospace, Consolas, monospace';
+  }
+  c.fillText('github.com/sylvesterzhang/selfnas', tx, cardY + 140);
+
+  c.fillStyle = '#64748b';
+  fs = 26;
+  c.font = '400 ' + fs + 'px ' + FONT;
+  while (c.measureText('数据都在自己电脑上，不经过任何第三方').width > textW && fs > 18) {
+    fs -= 1;
+    c.font = '400 ' + fs + 'px ' + FONT;
+  }
+  c.fillText('数据都在自己电脑上，不经过任何第三方', tx, cardY + 192);
+
+  // —— 页脚
+  c.fillStyle = '#94a3b8';
+  c.font = '400 28px ' + FONT;
+  c.textAlign = 'center';
+  c.fillText('selfnas · 让手机和电脑之间没有那根线', POSTER_W / 2, 1596);
+  c.textAlign = 'left';
+
+  return cv.toDataURL('image/png');
+}
+
+let posterDataURL = '';
+
+async function openPoster() {
+  const overlay = $('poster');
+  const body = $('posterBody');
+  overlay.classList.add('on');
+  body.innerHTML = '<div class="poster-loading">正在生成海报…</div>';
+  try {
+    posterDataURL = await renderPoster();
+    body.innerHTML = '';
+    const im = document.createElement('img');
+    im.className = 'poster-img';
+    im.alt = 'selfnas 宣传海报';
+    im.src = posterDataURL;
+    body.appendChild(im);
+  } catch (e) {
+    body.innerHTML = '<div class="poster-loading">海报生成失败：' + esc(e.message) + '</div>';
+  }
+}
+
+$('btnPoster').addEventListener('click', openPoster);
+$('posterClose').addEventListener('click', () => {
+  $('poster').classList.remove('on');
+  $('posterBody').innerHTML = '';   // 4MB 的 dataURL 留着占内存，关掉就放
+});
+$('poster').addEventListener('click', (ev) => {
+  if (ev.target.id === 'poster') {
+    $('poster').classList.remove('on');
+    $('posterBody').innerHTML = '';
+  }
+});
+// dataURL → File，给 Web Share 用（分享面板只认 File/Blob，不认 dataURL）
+function dataURLtoFile(dataURL, name) {
+  try {
+    const bin = atob(dataURL.split(',')[1]);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return new File([arr], name, { type: 'image/png' });
+  } catch (e) { return null; }
+}
+
+$('posterSave').addEventListener('click', async () => {
+  if (!posterDataURL) return;
+  // iOS Safari 的 a[download] 会把图塞进「文件」App 深处，用户根本找不到。
+  // iPhone 上优先走系统分享面板，能直接「存储到照片」；桌面/安卓保持原来的直接下载
+  // （局域网 http 不是 secure context，iOS 上拿不到 Web Share，靠下面的长按提示兜底）。
+  const f = isIOS ? dataURLtoFile(posterDataURL, 'selfnas-poster.png') : null;
+  if (f && navigator.canShare && navigator.canShare({ files: [f] })) {
+    try {
+      await navigator.share({ files: [f], title: 'selfnas' });
+      return; // 存了还是取消了都算走完，不再触发下载
+    } catch (e) {
+      if (e && e.name === 'AbortError') return; // 用户主动关掉分享面板
+      // 分享真失败了，掉到下面的下载兜底
+    }
+  }
+  const a = document.createElement('a');
+  a.href = posterDataURL;
+  a.download = 'selfnas-poster.png';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  toast(isIOS ? '没弹出分享的话：长按上面的图片，选「存储到照片」' : '已开始下载');
+});
+
+
 async function boot() {
   clog('文件页加载 standalone=' + (window.navigator.standalone ? 1 : 0) +
     ' dpr=' + (window.devicePixelRatio || 1) + ' w=' + window.innerWidth);
   try {
     await loadRoots();
     await loadFavs();      // 先拿一次收藏，列表里的 ★ 才不会漏画
+    // 「刚点开」标记：开机先取一次（刷新页面/换设备都能把标记带回来）
+    try {
+      const lo = await api('/api/fs/lastopen');
+      if (lo && lo.data && lo.data.path) S.lastOpen = lo.data;
+    } catch (e2) {}
     if (S.root) await loadList();
   } catch (e) {
     if (e.message !== '未登录') toast(e.message);

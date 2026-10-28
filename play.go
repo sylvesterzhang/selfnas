@@ -31,54 +31,88 @@ func needRemux(name string) bool {
 }
 
 var (
-	ffOnce      sync.Once
-	ffmpegBin   string
-	ffprobeBin  string
-	transcoding int32 // 正在转的个数，用于日志和限流
+	ffMu           sync.Mutex
+	ffScanned      bool
+	ffForceMissing bool // -no-ffmpeg 测试钩子：假装没装，验证引导安装流程
+	ffmpegBin      string
+	ffprobeBin     string
+	transcoding    int32 // 正在转的个数，用于日志和限流
 )
 
-// findFF 找 ffmpeg。顺序：配置里写死的 → 能跑 nvenc 的那几个 → PATH。
+// ffInvalidate 让下一次 findFF 重新探测。
+// ffmpeg 引导安装完成后调用：新装的 exe 在磁盘上了，但结果还缓存在旧探测里。
+func ffInvalidate() {
+	ffMu.Lock()
+	ffScanned = false
+	ffMu.Unlock()
+}
+
+// findFF 找 ffmpeg。顺序：配置里写死的 → exe 旁边 → 各盘符下的已知位置 → PATH。
 //
 // 为什么把 Jellyfin 那份排前面：显卡是 RTX 4070，但驱动 591.86 只到 nvenc API 13.0，
-// 而 ffmpeg 9.x 的 nvenc 要求 13.1（驱动 ≥610）。放第一的 9.0.2 因此**编不了码**，
+// 而 ffmpeg 9.x 的 nvenc 要求 13.1（驱动 ≥610）。9.0.2 因此**编不了码**，
 // 只能用来 copy。Jellyfin 自带 7.0.2，对应 13.0，nvenc 实测 4K 转 H.264 有 92fps。
 // 等哪天驱动升到 610+，把配置里的 ffmpeg 指回 9.x 就行。
+//
+// 已知位置不写死盘符：双系统/加减分区都会让同一个卷换盘符，
+// 写死 E:\ 在另一个系统里就是「找不到 ffmpeg」（2026-10-27 踩过：MKV 全部打不开）。
+// 所以逐个现存盘符去探测同样的相对位置。
 func findFF() (string, string) {
-	ffOnce.Do(func() {
-		var cands []string
-		if cfg.FFmpeg != "" {
-			cands = append(cands, cfg.FFmpeg)
+	ffMu.Lock()
+	defer ffMu.Unlock()
+	if ffScanned {
+		return ffmpegBin, ffprobeBin
+	}
+	ffScanned = true
+	var cands []string
+	if cfg.FFmpeg != "" {
+		cands = append(cands, cfg.FFmpeg)
+	}
+	// 测试钩子：-no-ffmpeg 假装没装，用来验证引导安装流程
+	if ffForceMissing {
+		ffmpegBin, ffprobeBin = "", ""
+		log.Printf("[转封装] -no-ffmpeg 生效，假装没有 ffmpeg")
+		return "", ""
+	}
+	// exe 旁边放一份就能用：便携部署的标准位置，跟盘符、系统都无关
+	if exe, err := os.Executable(); err == nil {
+		cands = append(cands, filepath.Join(filepath.Dir(exe), "ffmpeg.exe"))
+	}
+	relCands := []string{
+		`TD_WinNAS\Jellyfin\Server\ffmpeg.exe`,
+		`ffmpeg_portable\ffmpeg-9.0.2-essentials_build\bin\ffmpeg.exe`,
+		`TD_WinNAS\ffmpeg.exe`,
+		`ffmpeg\bin\ffmpeg.exe`,
+		`ffmpeg.exe`,
+	}
+	for _, d := range listDrives() {
+		for _, rel := range relCands {
+			cands = append(cands, filepath.Join(d.Path, rel))
 		}
-		cands = append(cands,
-			`E:\TD_WinNAS\Jellyfin\Server\ffmpeg.exe`,
-			`E:\ffmpeg_portable\ffmpeg-9.0.2-essentials_build\bin\ffmpeg.exe`,
-			`E:\TD_WinNAS\ffmpeg.exe`,
-			`C:\ffmpeg\bin\ffmpeg.exe`,
-		)
-		for _, c := range cands {
-			if st, err := os.Stat(c); err == nil && !st.IsDir() {
-				ffmpegBin = c
-				p := filepath.Join(filepath.Dir(c), "ffprobe.exe")
-				if st2, err2 := os.Stat(p); err2 == nil && !st2.IsDir() {
-					ffprobeBin = p
-				}
-				break
+	}
+	for _, c := range cands {
+		if st, err := os.Stat(c); err == nil && !st.IsDir() {
+			ffmpegBin = c
+			p := filepath.Join(filepath.Dir(c), "ffprobe.exe")
+			if st2, err2 := os.Stat(p); err2 == nil && !st2.IsDir() {
+				ffprobeBin = p
+			}
+			break
+		}
+	}
+	if ffmpegBin == "" {
+		if p, err := exec.LookPath("ffmpeg"); err == nil {
+			ffmpegBin = p
+			if pp, err2 := exec.LookPath("ffprobe"); err2 == nil {
+				ffprobeBin = pp
 			}
 		}
-		if ffmpegBin == "" {
-			if p, err := exec.LookPath("ffmpeg"); err == nil {
-				ffmpegBin = p
-				if pp, err2 := exec.LookPath("ffprobe"); err2 == nil {
-					ffprobeBin = pp
-				}
-			}
-		}
-		if ffmpegBin != "" {
-			log.Printf("[转封装] ffmpeg=%s ffprobe=%s", ffmpegBin, ffprobeBin)
-		} else {
-			log.Printf("[转封装] 没找到 ffmpeg，MKV 这类文件将无法在线播放")
-		}
-	})
+	}
+	if ffmpegBin != "" {
+		log.Printf("[转封装] ffmpeg=%s ffprobe=%s", ffmpegBin, ffprobeBin)
+	} else {
+		log.Printf("[转封装] 没找到 ffmpeg，MKV 这类文件将无法在线播放")
+	}
 	return ffmpegBin, ffprobeBin
 }
 
@@ -320,11 +354,11 @@ func handleFSPlayInfo(w http.ResponseWriter, r *http.Request) {
 	name := filepath.Base(full)
 	ffm, _ := findFF()
 	out := map[string]any{
-		"name":      name,
-		"size":      st.Size(),
-		"remux":     needRemux(name),
-		"ffmpeg":    ffm != "",
-		"playable":  !needRemux(name),
+		"name":       name,
+		"size":       st.Size(),
+		"remux":      needRemux(name),
+		"ffmpeg":     ffm != "",
+		"playable":   !needRemux(name),
 		"unplayable": needRemux(name) && ffm == "",
 	}
 	if needRemux(name) && ffm != "" {
