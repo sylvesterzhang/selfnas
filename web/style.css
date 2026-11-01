@@ -41,6 +41,144 @@
   }
 }
 
+/* ---------- 皮肤预设（管理台「系统设置 → 文件站外观」选择） ----------
+   files 页启动时按配置给 <html> 挂 data-theme（配置恒有值：旧版「跟随系统」已取消，
+   空值在服务端迁移为 light）。属性选择器（0,1,1）优先级高于 :root（0,1,0），
+   所以强制主题连暗色系统偏好也压得住。
+   边界：只动色调/字体/行距，不动布局——每套皮肤都是纯变量覆盖。 */
+
+/* 雾紫（key 仍叫 light：它是默认亮色主题，2026-11-01 从蓝主色改成紫，
+   免得和新加的海盐蓝长得像双胞胎） */
+html[data-theme="light"] {
+  --bg: #f7f6fb;
+  --surface: #ffffff;
+  --surface-2: #edeaf6;
+  --text: #232038;
+  --text-2: #5c5876;
+  --text-3: #8a87a0;
+  --border: rgba(35, 32, 56, 0.12);
+  --accent: #5a50c8;
+  --accent-soft: #e9e7fb;
+  --accent-line: #c3bff0;
+  --ok: #3b6d11;
+  --ok-soft: #eaf3de;
+  --ok-line: #c0dd97;
+  --warn: #854f0b;
+  --warn-soft: #faeeda;
+  --danger: #a32d2d;
+  --danger-soft: #fcebeb;
+}
+
+/* 夜间：OLED 纯黑底，比跟随系统的暗色更深一档 */
+html[data-theme="dark"] {
+  --bg: #0a0a0a;
+  --surface: #17171a;
+  --surface-2: #202024;
+  --text: #ececec;
+  --text-2: #b4b2a9;
+  --text-3: #7a7a76;
+  --border: rgba(255, 255, 255, 0.14);
+  --accent: #85b7eb;
+  --accent-soft: #0c447c;
+  --accent-line: #185fa5;
+  --ok: #97c459;
+  --ok-soft: #27500a;
+  --ok-line: #3b6d11;
+  --warn: #ef9f27;
+  --warn-soft: #412402;
+  --danger: #f09595;
+  --danger-soft: #501313;
+}
+
+/* 电子书：米黄纸底 + 衬线字体 + 行距放宽——书卷气靠字体不只靠颜色 */
+html[data-theme="ebook"] {
+  --bg: #f2ead6;
+  --surface: #faf5e7;
+  --surface-2: #eee3c8;
+  --text: #3f3524;
+  --text-2: #6b5d42;
+  --text-3: #9c8f70;
+  --border: rgba(63, 53, 36, 0.18);
+  --accent: #8a6d3b;
+  --accent-soft: #eee3c8;
+  --accent-line: #cdb586;
+  --ok: #5d6b2a;
+  --ok-soft: #eef0d8;
+  --ok-line: #c2cc8e;
+  --warn: #8a5a16;
+  --warn-soft: #f6ead0;
+  --danger: #9c3a2a;
+  --danger-soft: #f6e4dc;
+}
+
+html[data-theme="ebook"] body {
+  font-family: Georgia, "Times New Roman", "Noto Serif SC", "Source Han Serif SC", "Songti SC", SimSun, serif;
+  line-height: 1.75;
+}
+
+/* 墨绿：主色换青瓷绿，其余沿用亮色骨架 */
+html[data-theme="green"] {
+  --bg: #edf1ec;
+  --surface: #ffffff;
+  --surface-2: #e2eae1;
+  --text: #21301e;
+  --text-2: #55654f;
+  --text-3: #7f8d7b;
+  --border: rgba(33, 48, 30, 0.16);
+  --accent: #0f6e56;
+  --accent-soft: #e1f5ee;
+  --accent-line: #9fe1cb;
+  --ok: #3b6d11;
+  --ok-soft: #eaf3de;
+  --ok-line: #c0dd97;
+  --warn: #854f0b;
+  --warn-soft: #faeeda;
+  --danger: #a32d2d;
+  --danger-soft: #fcebeb;
+}
+
+/* 海盐蓝：冷调浅蓝（2026-11-01 加强蓝味，跟改成紫的亮色拉开距离） */
+html[data-theme="blue"] {
+  --bg: #e3edf8;
+  --surface: #ffffff;
+  --surface-2: #d3e3f2;
+  --text: #14293e;
+  --text-2: #47617a;
+  --text-3: #7489a0;
+  --border: rgba(20, 41, 62, 0.15);
+  --accent: #0d7ec2;
+  --accent-soft: #ddeffa;
+  --accent-line: #9fd0ee;
+  --ok: #2f6d3a;
+  --ok-soft: #e4f2e6;
+  --ok-line: #b8dcbc;
+  --warn: #854f0b;
+  --warn-soft: #faeeda;
+  --danger: #a32d2d;
+  --danger-soft: #fcebeb;
+}
+
+/* 樱花粉：温柔浅粉，主色换玫瑰调 */
+html[data-theme="pink"] {
+  --bg: #faf1f3;
+  --surface: #ffffff;
+  --surface-2: #f4e4e8;
+  --text: #3a2228;
+  --text-2: #7a5c64;
+  --text-3: #a38791;
+  --border: rgba(58, 34, 40, 0.14);
+  --accent: #b04a6e;
+  --accent-soft: #fbe7ed;
+  --accent-line: #f0c3d1;
+  --ok: #4a6b1e;
+  --ok-soft: #eef3de;
+  --ok-line: #c6dd97;
+  --warn: #8a4a12;
+  --warn-soft: #faeeda;
+  --danger: #a32d2d;
+  --danger-soft: #fcebeb;
+}
+
 * { box-sizing: border-box; }
 
 body {
@@ -66,6 +204,27 @@ a { color: var(--accent); text-decoration: none; }
 
 .brand { font-size: 15px; font-weight: 500; padding: 0 10px 4px; }
 .brand small { display: block; font-size: 11px; color: var(--text-3); font-weight: 400; }
+
+/* —— 品牌字标：**用文字排，不用图片**
+   原设计是「Self」常规灰蓝 +「NAS」粗体亮蓝。用文字排的好处：
+   每套主题能单独配色（暗色主题下原色几乎看不见，为此再维护一份 PNG 太麻烦）、
+   不吃带宽、任何缩放都不糊。
+   ⚠️ 字体必须单独钉死无衬线：ebook 主题把 body 换成 Georgia 衬线，字标不能跟着变。
+   （海报是 canvas 出图，那边仍用设计师给的 PNG —— 印刷级场景要保字形。） */
+.brandmark {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  line-height: 1;
+  color: #6b7da3;
+}
+.brandmark b { font-weight: 700; color: #2047bc; }
+
+/* 深色主题：原色 #2047bc 压在 #0a0a0a 上对比度只有 ~2:1，提亮一档 */
+html[data-theme="dark"] .brandmark { color: #b9c4d8; }
+html[data-theme="dark"] .brandmark b { color: #6f9df7; }
+
+.brand .brandmark { font-size: 17px; margin-bottom: 7px; }
 
 .nav { margin-top: 18px; }
 .nav button {
@@ -145,13 +304,24 @@ button.btn, .btn {
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
 
 .overlay {
-  position: fixed; inset: 0; background: rgba(20, 20, 20, .55);
-  display: none; align-items: center; justify-content: center; padding: 20px; z-index: 50;
+  position: fixed; inset: 0;
+  /* ⚠️ 高度必须用 dvh：vh 在手机上等于「工具栏收起后」的大视口，
+     地址栏/底部工具栏一出来，居中的弹框顶和底就一起被挡住（2026-11-01 用户反馈）。
+     dvh 跟着可视区实时变；不支持的老浏览器回落到 vh（先写 vh 再写 dvh 覆盖）。 */
+  height: 100vh;
+  height: 100dvh;
+  background: rgba(20, 20, 20, .55);
+  display: none; align-items: center; justify-content: center; padding: 20px;
+  padding-top: max(20px, env(safe-area-inset-top));
+  padding-bottom: max(20px, env(safe-area-inset-bottom));
+  z-index: 50;
 }
 .overlay.on { display: flex; }
 .modal {
   background: var(--surface); border-radius: 14px; width: 100%; max-width: 520px;
-  max-height: 86vh; overflow: auto; padding: 20px 22px; border: 1px solid var(--border);
+  /* 同 overlay：vh 在手机上是大视口，改用 dvh 才不会顶到工具栏底下 */
+  max-height: 86vh; max-height: calc(100dvh - 40px);
+  overflow: auto; padding: 20px 22px; border: 1px solid var(--border);
 }
 .modal h3 { margin: 0 0 4px; font-size: 15px; font-weight: 500; }
 .modal .sub { font-size: 12px; color: var(--text-2); margin-bottom: 16px; }
@@ -169,6 +339,7 @@ button.btn, .btn {
 #login.on { display: flex; }
 .login-box { width: 320px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 26px 24px; }
 .login-box h2 { margin: 0 0 4px; font-size: 17px; font-weight: 500; }
+.login-box .brandmark { font-size: 24px; margin: 0 0 10px; }
 .login-box p.sub { margin: 0 0 20px; font-size: 12px; color: var(--text-2); }
 .login-box .btn { width: 100%; margin-top: 6px; }
 
@@ -200,24 +371,16 @@ button.btn, .btn {
 td.cap { white-space: nowrap; }
 
 /* ---------- 文件站（手机端） ---------- */
-.fs-body { padding-bottom: calc(70px + env(safe-area-inset-bottom)); }
+.fs-body { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 
 .fs-head {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
-  padding: calc(10px + env(safe-area-inset-top)) 16px 8px;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 9px;
+  padding: calc(10px + env(safe-area-inset-top)) 16px 9px;
   background: var(--bg); position: sticky; top: 0; z-index: 10;
 }
-/* 顶栏右侧有「最近 / 收藏」两个 chip + 两个图标，标题要让位：超长目录名走省略号 */
-.fs-title { min-width: 0; flex: 1 1 auto; }
-.fs-title h1 {
-  font-size: 19px; font-weight: 500; margin: 0; letter-spacing: -0.01em;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.fs-sub {
-  display: block; font-size: 11px; color: var(--text-3);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.fs-head-actions { display: flex; gap: 4px; flex: 0 0 auto; margin-left: auto; }
+/* 原来这里有个 19px 的大标题（「资料 D:」）+ 副标题「59 项」。
+   删掉了：下面盘符条里选中的那一项就是当前位置，同一个信息说两遍只是把首屏顶下去。 */
+.fs-head-actions { display: flex; gap: 4px; flex: 1 1 100%; flex-wrap: nowrap; align-items: center; }
 .icon-btn {
   width: 34px; height: 34px; border-radius: 9px; border: none; background: transparent;
   color: var(--text-2); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
@@ -225,23 +388,37 @@ td.cap { white-space: nowrap; }
 }
 .icon-btn:hover { background: var(--surface-2); }
 
-/* 根目录切换：手机端整行换到标题下面（order 3 + 撑满整行）；桌面端并在标题同一行 */
+/* 根目录切换：手机端独占第一行（横滚，不换行 —— 换行会让顶栏随盘数变高）；
+   桌面端在左边、操作在右，同一行。 */
 .fs-roots {
   display: flex; gap: 8px; overflow-x: auto;
-  flex: 1 1 100%; order: 3; padding: 2px 0 0;
+  flex: 1 1 100%; order: 0; padding: 2px 0 0;
+  scrollbar-width: none;
 }
+.fs-roots::-webkit-scrollbar { display: none; }
 .chip {
   flex: 0 0 auto; font-size: 12px; padding: 6px 12px; border-radius: 999px;
   background: var(--surface); border: 1px solid var(--border); color: var(--text-2);
   font-family: inherit; cursor: pointer;
 }
 .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-.fs-head-actions .chip { height: 30px; padding: 0 12px; display: inline-flex; align-items: center; }
+/* 只读根角标：跟盘符同高的小药丸，在 .on 态下也要能看清 */
+.chip-ro {
+  display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 6px;
+  font-size: 10px; line-height: 15px; vertical-align: 1px;
+  background: rgba(0, 0, 0, .10); color: inherit; opacity: .85;
+}
+.chip.on .chip-ro { background: rgba(255, 255, 255, .28); color: #fff; opacity: 1; }
+.fs-head-actions .chip { height: 32px; padding: 0 12px; display: inline-flex; align-items: center; }
 
 /* 最近浏览：点一个目录直接跳过去。只记目录不记文件 —— 用户说"具体哪个文件不重要" */
+/* 高度必须钉死（不能 max-height）：
+   「最近 / 收藏」共用一块弹层，两边内容长短不一，max-height 会跟着内容变高变矮，
+   弹层又是垂直居中的 —— 顶部会上下跳（用户反馈"晃眼睛"，和宽度跳是同一类问题）。
+   固定 height + 内部滚动，空态和满列表的框一样大，怎么切都纹丝不动。 */
 .recent-list {
   display: flex; flex-direction: column; gap: 6px;
-  max-height: 54vh; overflow-y: auto; margin: 6px 0 2px;
+  height: 54vh; overflow-y: auto; margin: 6px 0 2px;
   -webkit-overflow-scrolling: touch;
 }
 .recent-item {
@@ -263,11 +440,32 @@ td.cap { white-space: nowrap; }
 }
 .recent-item .ri-time { flex: 0 0 auto; font-size: 11px; color: var(--text-3); }
 .recent-list .empty { padding: 18px 4px; text-align: center; color: var(--text-3); font-size: 12.5px; }
+/* 列表高度固定后，空态提示在整块区域里垂直居中，别孤零零顶在框顶 */
+.recent-list .empty { margin: auto; }
 
 /* 「最近 / 收藏」共用一块弹层，靠 tab 切换；分成两个弹层会让顶栏两个入口各自弹一套，重复 */
 .panel-tabs {
   display: flex; gap: 6px; margin: 2px 0 10px;
   border-bottom: 0.5px solid var(--border); padding-bottom: 10px;
+}
+
+/* 管理台「文件站外观」的皮肤选择卡片。管理台本身不换肤，色点是写死的预览色 */
+.theme-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.theme-card {
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
+  padding: 10px 14px 8px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface); color: var(--text-2); cursor: pointer;
+  font-family: inherit; font-size: 12.5px; min-width: 84px;
+}
+.theme-card:hover { border-color: var(--accent); color: var(--accent); }
+.theme-card.on {
+  border-color: var(--accent); color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.theme-card .dots { display: flex; gap: 4px; }
+.theme-card .dot {
+  width: 13px; height: 13px; border-radius: 50%;
+  border: 0.5px solid rgba(0, 0, 0, 0.25);
 }
 .ptab {
   flex: 1; font-family: inherit; font-size: 13px; padding: 7px 0; cursor: pointer;
@@ -317,44 +515,51 @@ td.cap { white-space: nowrap; }
 }
 .crumb-star.on svg { fill: currentColor; }
 
-/* 导航行拆两行：路径一行、工具一行。
-   路径可能很长（长文件夹名、层级深），跟收藏星/排序挤一行时，
-   路径文字会从按钮底下穿过去。分两行后路径整行自用、横向滚动不被压；
-   两行都恒显示（路径恒显示、排序恒显示），切换目录时高度不跳。 */
+/* 导航行：只在子目录出现（根目录时面包屑没内容，盘符条已说明位置）。
+   路径一行可横滚，收藏星 + 项数靠右，三者同一行 —— 原先是「路径一行、工具一行」两行，
+   加上最上面的标题行，手机上光导航就吃掉 90px。 */
 .fs-nav {
-  display: flex; flex-direction: column; gap: 7px;
-  padding: 0 16px 10px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 16px 8px;
 }
+/* hidden 属性要压得住 display:flex，否则「根目录隐藏」这句等于没写 */
+.fs-nav[hidden] { display: none; }
 .fs-crumb {
-  flex: 1 1 auto; min-width: 0; min-height: 21px;
+  flex: 0 1 auto; min-width: 0;
   display: flex; align-items: center; gap: 2px;
-  font-size: 12px; color: var(--text-3);
+  font-size: 12.5px; color: var(--text-2);
   overflow-x: auto; white-space: nowrap;
   scrollbar-width: none;
 }
 .fs-crumb::-webkit-scrollbar { display: none; }
+.crumb-item { color: var(--text-3); }
+.crumb-item.on { color: var(--text-1); }
 .crumb-item.link { color: var(--accent); cursor: pointer; }
-.crumb-sep { color: var(--text-3); opacity: .65; }
+.crumb-sep { color: var(--text-3); opacity: .55; }
 
-/* 工具行：收藏星在左（跟上面的路径对齐），排序靠右 */
+/* 工具位：收藏星紧跟路径（两件事都在说「你现在在哪」），项数单独推到最右 */
 .fs-tools {
-  display: flex; align-items: center; gap: 10px; min-height: 28px;
+  display: flex; align-items: center; gap: 8px;
+  flex: 1 1 auto; min-width: 0;
+}
+.fs-count {
+  margin-left: auto; padding-left: 12px;
+  font-size: 11px; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums;
 }
 
-/* 排序：工具行右端。不换行（换行会让行高随目录深度变化，页面上下抖） */
-.fs-sort {
-  display: flex; align-items: center; gap: 6px;
-  flex: 0 0 auto; margin-left: auto;
+/* 排序按钮：图标 + 当前状态。手机上只留图标（一行塞不下文字），
+   点了有 toast 交代切到哪种排序；桌面上把「名称 ↑」写出来，一眼看到当前口径 */
+.sort-btn {
+  width: auto; padding: 0 8px; gap: 5px;
+  font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap;
 }
-.fs-sort-lbl { flex: 0 0 auto; font-size: 11px; color: var(--text-3); }
-.fs-sort .chip { padding: 5px 10px; }
-/* 箭头是文字不是图标，等宽一点，切换时数字/汉字不会左右跳 */
-.fs-sort .chip.on { font-variant-numeric: tabular-nums; }
+.sort-btn .sort-txt { display: none; }
+.sort-btn:active { background: var(--surface-2); }
 
 /* 列标题：桌面端专用（手机端两列本来就不显示），给「大小 / 修改时间」一个名分 */
 .fs-colhead { display: none; }
 
-.fs-list { padding: 0 12px; }
+.fs-list { padding: 4px 12px 0; }
 .fs-list .row {
   display: flex; align-items: center; gap: 12px; padding: 11px 8px;
   border-bottom: 0.5px solid var(--border); cursor: pointer;
@@ -413,37 +618,97 @@ td.cap { white-space: nowrap; }
 }
 .empty { text-align: center; color: var(--text-3); font-size: 13px; padding: 50px 20px; }
 
-.fs-actions {
-  position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 8px;
-  padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
-  background: var(--surface); border-top: 0.5px solid var(--border); z-index: 20;
+/* —— 品牌落点（files 页）：不放顶栏、也不铺满屏水印
+   顶栏已经有盘符条 + 六个按钮，塞字标会挤掉「你在哪个盘」；
+   整屏水印会压在文件名和缩略图下面，轻了看不见、重了像未注册软件。
+   所以只在**没有内容可挡**的地方露脸：空文件夹，以及列表滚到底的落款。 */
+.empty-dir {
+  min-height: 52vh;                 /* 在「上一级」下面这段空白里居中，别孤零零贴着顶 */
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 24px 20px 40px;
 }
-.fs-actions .btn { flex: 1; text-align: center; padding: 11px 0; font-size: 13px; white-space: nowrap; }
+.empty-dir .brandmark { font-size: 22px; display: block; margin-bottom: 12px; }
+.empty-dir .hint { font-size: 12.5px; color: var(--text-3); line-height: 1.7; }
+.empty-dir .hint b { font-weight: 500; color: var(--text-2); }
+
+.fs-sign {
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  padding: 30px 0 14px;
+  font-size: 11.5px; color: var(--text-3);
+}
+.fs-sign .brandmark { font-size: 12.5px; color: var(--text-3); }
+.fs-sign .brandmark b { color: var(--text-3); opacity: .82; }
+
+/* ---------- 悬浮操作按钮（手机端） ----------
+   底部固定栏（上传/新建两个大按钮）收成一个「+」：网页端定位是浏览，
+   大文件上传走 SMB/WebDAV，这两个动作是低频的，不配占一整条底栏。
+   点「+」向上展开两个 pill，点页面其他任何地方收起。 */
+.fs-fab {
+  position: fixed; left: 18px;
+  bottom: calc(18px + env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; align-items: flex-start;
+  gap: 12px; z-index: 21;
+}
+.fab-btn {
+  width: 54px; height: 54px; border-radius: 50%;
+  border: none; cursor: pointer; font-family: inherit;
+  background: var(--accent); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+  transition: transform 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+/* 展开时「+」转成「×」 */
+.fs-fab.on .fab-btn { transform: rotate(45deg); }
+.fab-btn:active { transform: scale(0.94); }
+.fs-fab.on .fab-btn:active { transform: rotate(45deg) scale(0.94); }
+
+.fab-menu {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 10px;
+  opacity: 0; transform: translateY(10px); pointer-events: none;
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+.fs-fab.on .fab-menu { opacity: 1; transform: none; pointer-events: auto; }
+.fab-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 11px 18px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--border);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
+  font-size: 13.5px; font-weight: 500; color: var(--text-1);
+  font-family: inherit; cursor: pointer; white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+}
+.fab-item:active { background: var(--surface-2); }
+.fab-item svg { color: var(--accent); }
+/* 「读取中 Ns」等待状态挂在按钮文字上（paintPickButton 会改 textContent） */
+.fab-item.busy { opacity: 0.72; font-variant-numeric: tabular-nums; }
 
 .fs-uploadbox {
-  display: none; position: fixed; left: 0; right: 0; bottom: calc(62px + env(safe-area-inset-bottom));
+  display: none; position: fixed; left: 0; right: 0;
+  /* FAB 悬浮在左下角（约 90px 高的区域），进度框从它上方伸出，互不遮挡 */
+  bottom: calc(88px + env(safe-area-inset-bottom));
   background: var(--surface); border-top: 0.5px solid var(--border);
   max-height: 40vh; overflow-y: auto; z-index: 19; padding: 4px 16px 10px;
 }
+.fs-uploadbox.on { display: block; }
 .fs-uploadbox.on { display: block; }
 .up-head {
   display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 500;
   padding: 8px 0 4px; position: sticky; top: 0; background: var(--surface);
 }
 .up-head .muted { font-weight: 400; flex: 1; }
+/* 大文件走 WebDAV 的提示：只在有 ≥300MB 的文件时出现，别常驻占地方 */
+.up-tip {
+  font-size: 11px; line-height: 1.5; color: var(--text-3);
+  background: var(--surface-2); border-radius: 8px; padding: 7px 9px; margin: 4px 0 6px;
+}
+.up-tip b { color: var(--text-2); font-weight: 600; }
+.up-tip code { font-size: 11px; word-break: break-all; }
 .up-row { padding: 7px 0; }
 .up-name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .up-meta { font-size: 11px; color: var(--text-3); margin-bottom: 4px; }
 .bar { height: 3px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
 .bar i { display: block; height: 3px; background: var(--accent); transition: width .2s; }
-
-/* 「系统正在准备文件」的状态挂在按钮上，不弹框、不占列表位置。
-   文字要定宽，否则秒数从 9 跳到 10 时按钮会轻微抽动。 */
-.fs-actions label.btn.busy {
-  opacity: .7;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: .2px;
-}
 
 .viewer {
   display: none; background: #0b0b0b; z-index: 60; flex-direction: column;
@@ -466,6 +731,8 @@ td.cap { white-space: nowrap; }
 .viewer-body { flex: 1; min-height: 0; position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .viewer-body img, .viewer-body video { max-width: 100%; max-height: 100%; }
 .viewer-body audio { width: 90%; }
+/* PDF 内嵌：铺满预览区，灰底是桌面 Chrome 查看器的习惯底色，四周不像「没加载出来」 */
+.viewer-body iframe.pdfview { width: 100%; height: 100%; border: 0; background: #525659; }
 
 /* ---- 自建播放控件 ----
    原生 controls 有两个问题：① 自带的全屏按钮和我们的重复；② 它那个全屏进的是
@@ -662,12 +929,46 @@ td.cap { white-space: nowrap; }
 .qr-url { font-size: 12px; color: var(--text-2); word-break: break-all; }
 .qr-tip { font-size: 12px; color: var(--text-3); margin-bottom: 6px; }
 
+/* ---------- WebDAV 卡：比扫码卡矮一层，说明「大文件走这里」 ---------- */
+.dav-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 16px; margin-bottom: 18px;
+}
+.dav-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.dav-title { font-size: 13px; font-weight: 500; flex: 0 0 auto; }
+.dav-head .qr-url { flex: 1 1 220px; min-width: 0; }
+.dav-card .qr-tip { margin-bottom: 0; line-height: 1.6; }
+/* 地址用 overflow-wrap 而不是 break-all：手机上 break-all 会把 smb:// 拆成
+   「s / mb://…」，看着像打错了；anywhere 只在真的放不下时才断 */
+.dav-card .qr-tip code { font-size: 11px; word-break: normal; overflow-wrap: anywhere; }
+
+/* 卡片标题后的状态小标：明确「默认开启 / 默认关闭」，省得用户到处找开关 */
+.dav-badge {
+  font-size: 10px; line-height: 16px; padding: 0 7px; border-radius: 999px;
+  background: var(--surface-2); color: var(--text-3); border: 1px solid var(--border);
+  white-space: nowrap; flex: 0 0 auto;
+}
+
+/* SMB 卡：只有「第一次开启」和「445 被占」两种情况才露出这一行，
+   平时不占版面 —— 大部分用户（安卓/电脑）根本不需要开 SMB */
+.smb-pass-row {
+  display: flex; align-items: center; gap: 8px; margin-top: 9px; flex-wrap: wrap;
+}
+.smb-pass-row[hidden] { display: none; }
+.smb-pass-row input {
+  flex: 1 1 240px; min-width: 0; padding: 7px 10px; font-size: 12px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface-2); color: var(--text);
+}
+.smb-pass-row input:focus { outline: 2px solid var(--accent-line); outline-offset: -1px; }
+.smb-pass-row .muted { font-size: 11px; }
+
 /* 视觉隐藏但保留渲染与可访问性（iOS 上 file input 不能用 display:none） */
 .vh {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
-.fs-actions label.btn { display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.fab-item { display: flex; align-items: center; cursor: pointer; }
 
 /* 修复：列表行的 .main 与管理台布局的 .main 重名，导致行高被撑到 130px */
 .fs-list .row > .main { flex: 1; min-width: 0; padding: 0; }
@@ -710,7 +1011,12 @@ a.btn { text-decoration: none; }
   border-bottom: 0.5px solid var(--border); cursor: pointer; font-size: 13px;
 }
 .mv-row:active { background: var(--surface-2); }
-.mv-row .main { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 修复：.mv-row .main 与管理台布局的全局 .main 重名，会继承 padding:22px 26px 60px 把行高撑到 87px、
+   且图标（无 padding）被 align-items:center 顶到文字下方。这里把 padding 清零、图标位定宽居中。
+   与第 920 行 .fs-list .row > .main 的修复同一根因。 */
+.mv-row .ico { width: 22px; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; }
+.mv-row .ico svg { display: block; }
+.mv-row .main { flex: 1; min-width: 0; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mv-empty { padding: 18px 4px; font-size: 12px; color: var(--text-3); text-align: center; }
 
 /* ═══════════════════════════════════════════════════════════
@@ -733,19 +1039,21 @@ a.btn { text-decoration: none; }
   .fs-head, .fs-nav, .fs-colhead, .fs-list {
     max-width: 1040px; margin-left: auto; margin-right: auto;
   }
-  .fs-head { padding: 16px 16px 12px; gap: 18px; }
-  /* 桌面端：标题 + 根目录标签 + 右侧操作，一行放下 */
-  .fs-title { flex: 0 1 auto; }
-  .fs-roots { flex: 1 1 auto; min-width: 0; order: 0; padding: 0; }
-  /* 右边距 72px = 16(列表)+12(行内距)+32(⋮)+12(间隙)：让工具行右端的「排序」右缘
+  .fs-head { padding: 18px 16px 12px; gap: 16px; flex-wrap: nowrap; }
+  /* 桌面端一行：盘符条在左（吃掉剩余宽度），操作在右 */
+  .fs-roots { flex: 1 1 auto; min-width: 0; padding: 0; }
+  .fs-head-actions { flex: 0 0 auto; }
+  /* 桌面上排序把当前口径写出来：图标单看不知道按什么排的 */
+  .sort-btn .sort-txt { display: inline; }
+  /* 右边距 72px = 16(列表)+12(行内距)+32(⋮)+12(间隙)：让项数右缘
      跟「修改时间」列标题落在同一条竖线上，右侧不至于两层各往各的方向跑 */
-  .fs-nav { padding: 0 72px 10px 16px; }
-  .fs-list { padding: 0 16px; }
+  .fs-nav { padding: 2px 72px 10px 16px; }
+  .fs-list { padding: 0 16px 8px; }
 
   /* 列标题：跟列表行同一套列宽/间距（gap 12px、右列 92/118、末尾 32 给 ⋮） */
   .fs-colhead {
     display: flex; align-items: center; gap: 12px;
-    padding: 0 28px 6px;
+    padding: 6px 28px 6px;
     font-size: 11px; color: var(--text-3); letter-spacing: 0.02em;
   }
   .fs-colhead .ch-main { flex: 1; min-width: 0; }
@@ -785,7 +1093,7 @@ a.btn { text-decoration: none; }
   .fs-list .row-star.off:hover { color: #d6a05a; }
 
   /* 底部固定栏是手机形态，桌面操作全在顶栏 */
-  .fs-actions { display: none; }
+  .fs-fab { display: none; }
 
   /* 上传进度：右上角浮卡片，不再贴着底部栏上方 */
   .fs-uploadbox {
@@ -796,6 +1104,17 @@ a.btn { text-decoration: none; }
 
   /* 弹层在桌面上不用顶到满宽，居中收紧一点更好看 */
   .modal { width: auto; }
+
+  /* 「最近 / 收藏」弹层宽度钉死：两个 tab 内容长短不一，width:auto 会让整个框
+     跟着内容一会宽一会窄，切换时横向跳（用户反馈"晃眼睛"）。
+     430 与它的 max-width 一致，等于桌面上一律按满宽渲染。 */
+  #recent .modal { width: 430px; }
+  /* 这几个弹层内容偏窄（竖向按钮菜单 / 文件夹列表 / 单行输入），桌面端 width:auto 会把它
+     收缩到内容宽度——操作菜单被压成 ~140px 的细条、移动到/输入名称也偏窄。按各自 inline
+     的 max-width 钉死桌面宽度，跟 #recent 同一处理思路；手机端仍走 .modal 的 width:100%。 */
+  #sheet .modal { width: 360px; }
+  #mvSheet .modal { width: 440px; }
+  #prompt .modal { width: 380px; }
   .viewer-bar { padding: 10px 20px; }
 }
 
@@ -874,9 +1193,11 @@ a.qr-url:hover { text-decoration: underline; }
 
 /* ---------- 分享海报 ---------- */
 .poster-wrap {
-  /* 竖版海报 3:2 比例，宽度按视口算，保证整张能一次看全（不用滚） */
-  width: min(400px, 92vw);
-  max-height: 94vh;
+  /* 竖版长图，但**卡片本身绝不能超出可视区**：
+     高度按 dvh 扣掉遮罩的上下 padding 和安全区，海报在 body 里自己滚。 */
+  width: min(380px, 88vw);
+  max-height: calc(100vh - 40px);
+  max-height: calc(100dvh - 40px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
   display: flex; flex-direction: column;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -889,24 +1210,89 @@ a.qr-url:hover { text-decoration: underline; }
   padding: 12px 14px 10px 16px;
   font-size: 14px; font-weight: 500; color: var(--text);
   border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;          /* 标题栏和按钮栏不参与压缩，被压的只能是图那一块 */
 }
 .poster-body {
   padding: 10px;
+  flex: 1 1 auto;
+  min-height: 0;           /* flex 子项不给 0 就会撑破 max-height，滚动条永远不出现 */
   overflow-y: auto;
+  overscroll-behavior: contain;   /* 滚到底别把后面的页面一起带着滚 */
+  -webkit-overflow-scrolling: touch;
   background: var(--surface-2);
-  display: flex; align-items: center; justify-content: center;
-  min-height: 200px;
+  /* ⚠️ 不能用 flex+align-items:center 居中：内容比容器高时，居中会把顶部顶到
+     滚动区之上，那一段永远滚不到（实测海报顶部标题被切掉，2026-11-01）。
+     横排居中用 text-align 就够，图本身 width:100% 不需要居中。 */
+  text-align: center;
 }
 /* 海报是竖版长图：按宽度铺满，高度跟着走，容器负责滚动 */
 .poster-img {
-  display: block; width: 100%; height: auto;
+  display: block; width: 100%; height: auto; margin: 0 auto;
   border-radius: 10px;
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.12);
 }
-.poster-loading { font-size: 13px; color: var(--text-3); padding: 40px 0; }
+.poster-loading { font-size: 13px; color: var(--text-3); padding: 56px 0; }
 .poster-foot {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 14px 14px;
   border-top: 1px solid var(--border);
+  flex: 0 0 auto;
 }
 .poster-hint { font-size: 11.5px; color: var(--text-3); }
+
+/* ---------- 共享账号（受限访问）的白名单文件夹 chips ---------- */
+.scoped-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; padding: 3px 10px; border-radius: 999px;
+  background: var(--surface-2, var(--surface)); border: 1px solid var(--border);
+  color: var(--text-2); margin: 2px 8px 2px 0; max-width: 100%;
+}
+/* chip 里有两颗按钮：权限药丸（读写/只读）和移除叉，样式分开写，别混成一种 */
+.scoped-chip .scoped-perm {
+  border: 1px solid var(--border); background: var(--surface); cursor: pointer;
+  border-radius: 999px; padding: 1px 7px; margin-left: -4px;
+  font-family: inherit; font-size: 11px; line-height: 1.5; color: var(--text-2);
+  white-space: nowrap;
+}
+.scoped-chip .scoped-perm:hover { border-color: var(--accent); color: var(--accent); }
+/* 只读：琥珀色，扫一眼就知道这个文件夹对方动不了 */
+.scoped-chip .scoped-perm.ro {
+  border-color: color-mix(in srgb, #d6a05a 55%, transparent);
+  background: color-mix(in srgb, #d6a05a 14%, transparent);
+  color: #b8813c;
+}
+.scoped-chip .scoped-x {
+  border: none; background: none; cursor: pointer; padding: 0;
+  color: var(--text-3); font-size: 15px; line-height: 1; font-family: inherit;
+}
+.scoped-chip .scoped-x:hover { color: var(--danger); }
+
+/* 分段单选（读写 / 只读）：两段拼一个胶囊，选中段实心，比下拉少一次点击 */
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+.seg-btn {
+  border: none; background: var(--surface); color: var(--text-2);
+  font-family: inherit; font-size: 12.5px; padding: 7px 18px; cursor: pointer;
+}
+.seg-btn + .seg-btn { border-left: 1px solid var(--border); }
+.seg-btn.on { background: var(--accent); color: #fff; }
+
+/* 自启命令框（Linux / macOS）：每条命令带用途说明 + 复制按钮。
+   命令里有引号和路径，用等宽、可换行展示，不能用普通 hint 样式。 */
+.cmd-line {
+  margin-bottom: 10px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 9px 10px;
+}
+.cmd-line:last-child { margin-bottom: 0; }
+.cmd-label {
+  font-size: 12.5px; color: var(--text); line-height: 1.5;
+  margin-bottom: 6px;
+}
+.cmd-row { display: flex; align-items: flex-start; gap: 8px; }
+.cmd-row code {
+  flex: 1 1 auto; min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px; line-height: 1.55; color: var(--text);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.cmd-row .btn { flex: 0 0 auto; }

@@ -13,7 +13,14 @@ import (
 // 用户名直接取当前登录态（现在只有一个账号 admin，但表里带 username，
 // 以后加多用户不用动表结构）。
 
-func currentUser() string { return cfg.User }
+// currentUserOf 当前请求的用户名：admin 或受限账号（网页端多用户）。
+// 没登录时返回 admin 名（理论上到不了——这些接口都在 guardAuth 后面）。
+func currentUserOf(r *http.Request) string {
+	if u := webUserOf(r); u != "" {
+		return u
+	}
+	return cfg.User
+}
 
 func decodeBody(r *http.Request, v any) bool {
 	if r.Method != http.MethodPost {
@@ -47,7 +54,7 @@ func canonicalRoot(s string) string {
 }
 
 func handleRecentList(w http.ResponseWriter, r *http.Request) {
-	items, err := listStored(tblRecent, currentUser(), 30)
+	items, err := listStored(tblRecent, currentUserOf(r), 30)
 	if err != nil {
 		writeJSON(w, 500, "读取失败: "+err.Error(), nil)
 		return
@@ -67,7 +74,7 @@ func handleRecentAdd(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, "参数不完整", nil)
 		return
 	}
-	full, _, err := resolve(root, rel)
+	full, _, err := resolveFor(currentUserOf(r), root, rel)
 	if err != nil {
 		writeJSON(w, 403, "无权访问该路径", nil)
 		return
@@ -82,7 +89,7 @@ func handleRecentAdd(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, "只记录文件", nil)
 		return
 	}
-	if err = upsertStored(tblRecent, currentUser(), root, rel); err != nil {
+	if err = upsertStored(tblRecent, currentUserOf(r), root, rel); err != nil {
 		writeJSON(w, 500, "保存失败: "+err.Error(), nil)
 		return
 	}
@@ -95,7 +102,7 @@ func handleRecentRemove(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, "请求格式错误", nil)
 		return
 	}
-	if err := removeStored(tblRecent, currentUser(), canonicalRoot(b.Root), strings.TrimSpace(b.Path)); err != nil {
+	if err := removeStored(tblRecent, currentUserOf(r), canonicalRoot(b.Root), strings.TrimSpace(b.Path)); err != nil {
 		writeJSON(w, 500, "删除失败: "+err.Error(), nil)
 		return
 	}
@@ -107,7 +114,7 @@ func handleRecentClear(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 405, "只支持 POST", nil)
 		return
 	}
-	if err := clearStored(tblRecent, currentUser()); err != nil {
+	if err := clearStored(tblRecent, currentUserOf(r)); err != nil {
 		writeJSON(w, 500, "清空失败: "+err.Error(), nil)
 		return
 	}
@@ -115,7 +122,7 @@ func handleRecentClear(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleFavList(w http.ResponseWriter, r *http.Request) {
-	items, err := listStored(tblFav, currentUser(), 500)
+	items, err := listStored(tblFav, currentUserOf(r), 500)
 	if err != nil {
 		writeJSON(w, 500, "读取失败: "+err.Error(), nil)
 		return
@@ -139,7 +146,7 @@ func handleFavToggle(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, "参数不完整", nil)
 		return
 	}
-	full, _, err := resolve(root, rel)
+	full, _, err := resolveFor(currentUserOf(r), root, rel)
 	if err != nil {
 		writeJSON(w, 403, "无权访问该路径", nil)
 		return
@@ -147,8 +154,8 @@ func handleFavToggle(w http.ResponseWriter, r *http.Request) {
 	if _, err = os.Stat(full); err != nil {
 		// 文件已经没了也必须能取消收藏 —— 否则那条记录永远删不掉，
 		// 「取消收藏」这个动作不该依赖文件还在不在
-		if isFavorited(currentUser(), root, rel) {
-			if err = removeStored(tblFav, currentUser(), root, rel); err != nil {
+		if isFavorited(currentUserOf(r), root, rel) {
+			if err = removeStored(tblFav, currentUserOf(r), root, rel); err != nil {
 				writeJSON(w, 500, "保存失败: "+err.Error(), nil)
 				return
 			}
@@ -159,7 +166,7 @@ func handleFavToggle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := currentUser()
+	user := currentUserOf(r)
 	fav := isFavorited(user, root, rel)
 	if fav {
 		err = removeStored(tblFav, user, root, rel)
@@ -185,7 +192,7 @@ func handleFavToggle(w http.ResponseWriter, r *http.Request) {
 // POST {root, path} → 覆盖写入（name 由 path 取末段）
 
 func handleLastOpenGet(w http.ResponseWriter, r *http.Request) {
-	root, path, name := getLastOpen(currentUser())
+	root, path, name := getLastOpen(currentUserOf(r))
 	writeJSON(w, 0, "ok", map[string]any{"root": root, "path": path, "name": name})
 }
 
@@ -212,7 +219,7 @@ func handleLastOpenSet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, "参数不完整", nil)
 		return
 	}
-	if err := setLastOpen(currentUser(), root, rel, name); err != nil {
+	if err := setLastOpen(currentUserOf(r), root, rel, name); err != nil {
 		writeJSON(w, 500, "保存失败: "+err.Error(), nil)
 		return
 	}
@@ -232,7 +239,7 @@ func handleProgressGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, "参数不完整", nil)
 		return
 	}
-	pos, dur := getProgress(currentUser(), root, rel)
+	pos, dur := getProgress(currentUserOf(r), root, rel)
 	writeJSON(w, 0, "ok", map[string]any{"pos": pos, "dur": dur})
 }
 
@@ -255,7 +262,7 @@ func handleProgressSet(w http.ResponseWriter, r *http.Request) {
 	}
 	// 不 resolve/stat：上报来自正在播放的播放器，文件必然存在；
 	// 看完后文件被删也不该报错——删记录这个动作永远应该成功
-	if err := setProgress(currentUser(), root, rel, b.Pos, b.Dur); err != nil {
+	if err := setProgress(currentUserOf(r), root, rel, b.Pos, b.Dur); err != nil {
 		writeJSON(w, 500, "保存失败: "+err.Error(), nil)
 		return
 	}
@@ -264,9 +271,9 @@ func handleProgressSet(w http.ResponseWriter, r *http.Request) {
 
 func handleStats(w http.ResponseWriter, r *http.Request) {
 	var recent, fav, prog int
-	_ = db.QueryRow(`SELECT COUNT(1) FROM recent WHERE username = ?`, currentUser()).Scan(&recent)
-	_ = db.QueryRow(`SELECT COUNT(1) FROM favorite WHERE username = ?`, currentUser()).Scan(&fav)
-	_ = db.QueryRow(`SELECT COUNT(1) FROM progress WHERE username = ? AND pos > 0`, currentUser()).Scan(&prog)
+	_ = db.QueryRow(`SELECT COUNT(1) FROM recent WHERE username = ?`, currentUserOf(r)).Scan(&recent)
+	_ = db.QueryRow(`SELECT COUNT(1) FROM favorite WHERE username = ?`, currentUserOf(r)).Scan(&fav)
+	_ = db.QueryRow(`SELECT COUNT(1) FROM progress WHERE username = ? AND pos > 0`, currentUserOf(r)).Scan(&prog)
 	writeJSON(w, 0, "ok", map[string]any{
 		"recent": recent,
 		"fav":    fav,

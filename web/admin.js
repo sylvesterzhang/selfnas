@@ -37,6 +37,8 @@ $('loginForm').addEventListener('submit', async (e) => {
     if (r.code !== 0) { $('loginErr').textContent = r.msg; return; }
     hideLogin();
     await loadState();
+    loadQr();          // 登录后才拿得到二维码和 WebDAV 地址，不补这一下概览页会一直「加载中…」
+    loadSmb();
     toast('登录成功');
   } catch (err) {
     $('loginErr').textContent = err.message;
@@ -60,8 +62,10 @@ function switchTab(tab) {
   if (tab === 'overview') {
     loadState();
     if ($('qrImg').classList.contains('dim') || !$('qrImg').src) loadQr();
+    loadSmb();
   }
   if (tab === 'logs') loadLogs();
+  if (tab === 'account') loadScoped();
 }
 
 async function loadState() {
@@ -119,6 +123,7 @@ function render() {
   $('optAdminOnly').checked = !!d.settings.adminOnlyLocal;
   $('optConcurrency').value = d.settings.uploadConcurrency;
   $('optSession').value = d.sessionDays;
+  paintTheme((d.settings && d.settings.theme) || 'light');
   paintAutostart(d.autostart);
   paintAutostartOverview(d.autostart);
   paintUpdate(d.update);
@@ -181,10 +186,16 @@ function paintAutostartOverview(a) {
     return;
   }
   if (a.enabled) {
-    el.textContent = a.mode === 'task' ? '已开启（计划任务，后台无窗口）' : '已开启（注册表启动项）';
+    const who = a.mode === 'task' ? '计划任务，后台无窗口'
+      : a.mode === 'run' ? '注册表启动项'
+      : a.mode === 'systemd' ? 'systemd 服务'
+      : a.mode === 'launchd' ? 'LaunchDaemon'
+      : '已安装';
+    el.textContent = '已开启（' + who + '）';
     return;
   }
-  el.innerHTML = '未开启 · <a href="#" id="goAutostart">去系统设置开启</a>';
+  el.innerHTML = '未开启 · <a href="#" id="goAutostart">' +
+    (a.mode === 'systemd' || a.mode === 'launchd' ? '去复制安装命令' : '去系统设置开启') + '</a>';
   const link = document.getElementById('goAutostart');
   if (link) {
     link.addEventListener('click', (e) => {
@@ -202,13 +213,80 @@ function paintAutostart(a) {
   const cb = $('optAutostart');
   const note = $('autostartNote');
   const hint = $('autostartHint');
+  const box = $('autostartCmdBox');
+  const sw = cb.closest('.switch');
+  box.hidden = true;
   if (!a.supported) {
     cb.disabled = true;
     cb.checked = false;
+    if (sw) sw.style.display = '';
     note.textContent = a.detail || '此系统暂不支持';
     hint.style.display = 'none';
     return;
   }
+
+  // Linux / macOS：开关在这儿没有意义（我们不会替用户改系统），
+  // 改成「给你命令，粘到终端里执行」。每条命令都带用途说明，空命令自动跳过。
+  if (a.mode === 'systemd' || a.mode === 'launchd') {
+    if (sw) sw.style.display = 'none';
+    hint.style.display = 'none';
+    note.textContent = a.detail || '';
+
+    const cmds = [];
+    if (a.enabled) {
+      // 已安装：只给「关闭并卸载」命令，并明确标注用途
+      cmds.push({
+        label: '要关闭并卸载开机自启动，复制下面这条执行（不会影响你的文件）：',
+        cmd: a.commandOff || '',
+      });
+    } else {
+      // 未安装：① 安装并立即启动（带 --now）；② 仅现在启动一次（不开机自启）
+      cmds.push({
+        label: '① 安装并启用开机自启动（这一步会同时把服务立即启动起来）：',
+        cmd: a.command || '',
+      });
+      cmds.push({
+        label: '② 仅现在启动一次（不开机自启，下次重启不会自动拉起）：',
+        cmd: a.commandStart || '',
+      });
+    }
+    const list = cmds.filter((c) => c.cmd);
+    if (!list.length) return; // 配置没生成成功，只显示 note 里的原因
+
+    box.hidden = false;
+    $('autostartCmdHint').innerHTML = a.enabled
+      ? '执行完刷新本页确认。数据都在 config.json 里，卸载不会动它。'
+      : '配置文件已经生成好了：<code>' + esc(a.configPath || '') + '</code>' +
+        '<br>可以先 <code>cat</code> 看一眼内容，再整条复制执行（会要一次管理员密码）。';
+
+    const wrap = $('autostartCmdList');
+    wrap.innerHTML = '';
+    list.forEach((c) => {
+      const row = document.createElement('div');
+      row.className = 'cmd-line';
+      const lab = document.createElement('div');
+      lab.className = 'cmd-label';
+      lab.textContent = c.label;
+      const inner = document.createElement('div');
+      inner.className = 'cmd-row';
+      const code = document.createElement('code');
+      code.textContent = c.cmd;
+      const btn = document.createElement('button');
+      btn.className = 'btn sm';
+      btn.type = 'button';
+      btn.textContent = '复制';
+      btn.addEventListener('click', () => copyCmd(c.cmd));
+      inner.appendChild(code);
+      inner.appendChild(btn);
+      row.appendChild(lab);
+      row.appendChild(inner);
+      wrap.appendChild(row);
+    });
+    return;
+  }
+
+  // Windows
+  if (sw) sw.style.display = '';
   cb.disabled = false;
   cb.checked = !!a.enabled;
   if (!a.enabled) {
@@ -222,6 +300,23 @@ function paintAutostart(a) {
     txt += '（指向：' + a.exe + '）';
   }
   note.textContent = txt;
+}
+
+// 复制一条自启命令到剪贴板（供每条命令的「复制」按钮复用）
+async function copyCmd(text) {
+  if (!text) return;
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('命令已复制，去终端里粘贴执行');
+      return;
+    } catch (e) { /* 落到 execCommand */ }
+  }
+  if (legacyCopy(text)) {
+    toast('命令已复制，去终端里粘贴执行');
+  } else {
+    toast('复制失败，请手动选中命令');
+  }
 }
 
 $('optAutostart').addEventListener('change', async () => {
@@ -362,11 +457,25 @@ $('btnAddOk').addEventListener('click', async () => {
 
 // ---------- 设置 ----------
 
+// 文件站皮肤：点卡片只改本地选中态，随「保存设置」一起提交。
+let selTheme = 'light';
+function paintTheme(t) {
+  // 旧版「跟随系统」(空值) 已取消，兜底亮色
+  selTheme = t || 'light';
+  document.querySelectorAll('#themeRow .theme-card').forEach((b) => {
+    b.classList.toggle('on', b.dataset.theme === selTheme);
+  });
+}
+document.querySelectorAll('#themeRow .theme-card').forEach((b) => {
+  b.addEventListener('click', () => paintTheme(b.dataset.theme));
+});
+
 $('btnSettings').addEventListener('click', async () => {
   const r = await api('/api/settings', {
     adminOnlyLocal: $('optAdminOnly').checked,
     uploadConcurrency: parseInt($('optConcurrency').value, 10) || 2,
     sessionDays: parseInt($('optSession').value, 10) || 3650,
+    theme: selTheme,
   });
   toast(r.msg);
   if (r.code === 0) loadState();
@@ -403,6 +512,10 @@ async function loadQr() {
   img.src = r.data.png;
   $('qrUrl').textContent = r.data.url;
   $('qrUrl').href = r.data.url;   // 概览页地址是可点的超链接，新开页面直达
+  // WebDAV 地址跟扫码地址同一个 host，只是换路径：管理台用哪个地址打开，这里就用哪个
+  const dav = location.origin + '/dav/';
+  $('davUrl').textContent = dav;
+  $('davUrl').href = dav;
   $('btnQrDown').href = r.data.png;
   const days = r.data.sessionDays;
   $('qrTip').textContent = '扫开后输一次后台密码即可 · 登录保持 ' +
@@ -464,6 +577,26 @@ $('btnQrCopy').addEventListener('click', async () => {
     return;
   }
   selectNodeText($('qrUrl'));
+  toast('已选中地址，按 Ctrl+C（手机长按）复制');
+});
+
+// 复制 WebDAV 地址：跟「复制链接」同一套兜底逻辑，只是文案不同
+$('btnDavCopy').addEventListener('click', async () => {
+  const url = $('davUrl').href;
+  // 地址没生成时 href 还是当前页的 #，不能用 /^https?:/ 判断，否则会复制出「/admin#」这种假地址
+  if (!/\/dav\/$/.test(url)) { toast('地址还没生成，稍等一下'); return; }
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(url);
+      toast('WebDAV 地址已复制');
+      return;
+    } catch (e) { /* 落到 execCommand */ }
+  }
+  if (legacyCopy(url)) {
+    toast('WebDAV 地址已复制');
+    return;
+  }
+  selectNodeText($('davUrl'));
   toast('已选中地址，按 Ctrl+C（手机长按）复制');
 });
 
@@ -530,6 +663,7 @@ let logTimer = setInterval(() => {
   try {
     await loadState();
     loadQr();
+    loadSmb();
   } catch (e) {
     showLogin();
     return;
@@ -540,3 +674,341 @@ let logTimer = setInterval(() => {
     }
   }, 5000);
 })();
+
+// ---------- SMB（iPhone / iPad 的「文件」App 原生支持，WebDAV 不行） ----------
+// 交互刻意做得很轻：默认只显示一行状态；要开启时才露出密码框（
+// 因为 SMB 的 NTLM 需要 NT hash，而网页只存了 PBKDF2，必须再拿一次明文）。
+let smbState = null;
+
+function smbUrlOf(st) {
+  const host = location.hostname;
+  const port = st && st.port ? st.port : 445;
+  return 'smb://' + host + (port === 445 ? '' : ':' + port) + '/';
+}
+
+function paintSmb(st) {
+  smbState = st;
+  const url = smbUrlOf(st);
+  $('smbUrl').textContent = url;
+  $('smbUrl').href = url;
+
+  const btn = $('btnSmbToggle');
+  btn.textContent = st.enabled ? '关闭' : '开启';
+  btn.classList.toggle('primary', !st.enabled);
+
+  // 小标写的是「默认状态」，但真开着的时候得说「已开启」——
+  // 不然会出现「默认关闭」旁边配一个「关闭」按钮的自相矛盾画面
+  const badge = $('smbBadge');
+  if (badge) badge.textContent = st.enabled ? '已开启' : '默认关闭';
+
+  const tip = $('smbTip');
+  const passRow = $('smbPassRow');
+  const takeRow = $('smbTakeoverRow');
+  const restRow = $('smbRestoreRow');
+  passRow.hidden = true;
+  takeRow.hidden = true;
+  restRow.hidden = true;
+
+  if (st.running) {
+    tip.innerHTML = 'iPhone：<b>「文件」App → 右上角「…」→ 连接服务器</b> → 填 ' +
+      '<code>' + url + '</code> → 注册用户，账号 <b>' + st.user + '</b>、密码就是后台密码。<br>' +
+      '共享：' + (st.shares || []).join(' / ') + '。' +
+      '<span class="muted">锁屏、切 App 都会继续传。</span>' +
+      (st.os === 'windows'
+        ? '<br><span class="muted">445 是从 Windows 自带共享手里接过来的，所以本机的「文件共享 / 网络邻居」暂时用不了——' +
+          '关掉这张卡会自动还回去。</span>'
+        : '');
+    // Windows 上系统 SMB 会在开机时抢回 445，这里留一个重新接管的入口，
+    // 免得用户重启后发现手机连不上、不知道去哪修
+    if (st.os === 'windows') takeRow.hidden = false;
+    return;
+  }
+  if (st.enabled && !st.portFree) {
+    // 这一行的措辞分平台：Windows 上我们能替他停（有完整的还原路径），
+    // Linux/macOS 上只给命令、绝不代劳——服务名各发行版不一样，而且那可能是
+    // 用户自己开给别人的 Samba 共享，我们擅自停掉就是砸场子。
+    const why = st.error ? '<br><span class="muted">' + esc(String(st.error)).replace(/\n/g, '<br>') + '</span>' : '';
+    if (st.os === 'windows') {
+      tip.innerHTML = '端口 ' + st.port + ' 被 <b>Windows 自带的 SMB 服务</b>占着，我们起不来。' +
+        '点下面「接管 ' + st.port + '」：会停掉系统自带的 SMB 并设成开机不启动（弹一次管理员授权），' +
+        '之后 Windows 原来的「文件共享 / 网络邻居」就用不了了；' +
+        '<span class="muted">关掉 SMB 时会自动还回去。</span>';
+      takeRow.hidden = false;
+      return;
+    }
+    const how = st.os === 'darwin'
+      ? '<br>macOS：<b>系统设置 → 通用 → 共享 → 关掉「文件共享」</b>' +
+        '<br>或终端执行 <code>sudo launchctl bootout system/com.apple.smbd</code>'
+      : '<br>Ubuntu / Debian：<code>sudo systemctl stop smbd &amp;&amp; sudo systemctl disable smbd</code>' +
+        '<br>Fedora / RHEL：<code>sudo systemctl stop smb &amp;&amp; sudo systemctl disable smb</code>';
+    tip.innerHTML = '端口 ' + st.port + ' 被本机的 SMB 服务占着，我们起不来。' + why +
+      '<br><b>这一步要你自己动手：</b>先把本机的 SMB 服务停掉，再回来把这个开关关掉重开一次。' +
+      how +
+      '<br><span class="muted">我们不会替你去停——那可能是你自己开给别人的共享。</span>';
+    return;
+  }
+  if (st.enabled) {
+    tip.innerHTML = '已开启但没跑起来：' + (st.error || '未知原因') +
+      '<span class="muted">（可以关掉再开一次试试）</span>';
+    return;
+  }
+  if (st.tookOver) {
+    // 关了 SMB，但系统自带共享没还回去（多半是授权被取消了）——
+    // 这时候用户的「网络邻居」是坏的，必须把恢复入口摆出来
+    tip.innerHTML = '<b>Windows 自带的文件共享还没恢复。</b>' +
+      'SMB 已经关了，但 445 还没还给系统，本机的「文件共享 / 网络邻居」现在用不了。' +
+      '点下面按钮重试（会弹一次管理员授权）。';
+    restRow.hidden = false;
+    return;
+  }
+  tip.innerHTML = '默认关闭——只有 iPhone / iPad 需要它（「文件」App 不支持 WebDAV）。' +
+    '开启后填 <code>' + url + '</code> 就能直接拖文件进出，锁屏也不断。' +
+    '<span class="muted">安卓 / Windows / macOS 用上面的 WebDAV 就够了，不必开这个。</span>';
+}
+
+async function loadSmb() {
+  try {
+    const r = await api('/api/smb');
+    if (r.code === 0) paintSmb(r.data);
+  } catch (e) { /* 未登录时静默 */ }
+}
+
+async function smbToggle(on, pass) {
+  const body = { enable: on };
+  if (pass) body.pass = pass;
+  const r = await api('/api/smb', body);
+  if (r.code !== 0) { toast(r.msg || '操作失败'); if (r.data) paintSmb(r.data); return; }
+  if (r.data) paintSmb(r.data);
+  toast(r.msg || 'ok');
+}
+
+// 开启 SMB 是有代价的（抢 Windows 自带的 445，本机文件共享会停用），
+// 所以动手前必须让人看清楚这句话，而不是点完才发现网络邻居坏了
+function smbOnConfirm() {
+  if (!smbState || smbState.os !== 'windows') return true;
+  return confirm('开启 SMB 共享？\n\n' +
+    '会接管 445 端口：Windows 自带的「文件共享 / 网络邻居」将被停掉，并设为开机不再启动。\n' +
+    '（会弹一次管理员授权，点「否」就什么都不做）\n\n' +
+    '以后关掉这张卡时，会把 445 和系统共享自动还回去。');
+}
+
+$('btnSmbToggle').addEventListener('click', async () => {
+  if (!smbState) return;
+  if (smbState.enabled) {
+    const isWin = smbState.os === 'windows';
+    if (!confirm(isWin
+      ? '关闭 SMB 共享？\n\n445 会还给 Windows 自带的文件共享：服务改回自动启动并拉起（可能弹一次管理员授权）。'
+      : '关闭 SMB 共享？\n\n445 会空出来，之后你可以自己打开本机的 SMB 服务。')) return;
+    await smbToggle(false);
+    return;
+  }
+  if (smbState.hasCred) {
+    if (!smbOnConfirm()) return;
+    await smbToggle(true);
+    return;
+  }
+  // 第一次开启：要一次明文密码算 NT hash
+  $('smbPassRow').hidden = false;
+  $('smbPass').value = '';
+  $('smbPass').focus();
+});
+
+$('btnSmbPassOk').addEventListener('click', async () => {
+  const pass = $('smbPass').value;
+  if (!pass) { toast('先填密码'); return; }
+  if (!smbOnConfirm()) return;
+  await smbToggle(true, pass);
+});
+
+$('smbPass').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') $('btnSmbPassOk').click();
+});
+
+$('btnSmbTakeover').addEventListener('click', async () => {
+  toast('等管理员授权…');
+  const r = await api('/api/smb/takeover', {});
+  if (r.code !== 0) { toast(r.msg || '接管失败'); if (r.data) paintSmb(r.data); return; }
+  if (r.data) paintSmb(r.data);
+  toast(r.msg || '已接管');
+});
+
+$('btnSmbRestore').addEventListener('click', async () => {
+  toast('等管理员授权…');
+  const r = await api('/api/smb/restore', {});
+  if (r.code !== 0) { toast(r.msg || '恢复失败'); if (r.data) paintSmb(r.data); return; }
+  if (r.data) paintSmb(r.data);
+  toast(r.msg || '已恢复');
+});
+
+$('btnSmbCopy').addEventListener('click', async () => {
+  const url = $('smbUrl').href;
+  if (!/^smb:\/\//.test(url)) { toast('地址还没生成，稍等一下'); return; }
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(url); toast('SMB 地址已复制'); return; } catch (e) { /* 落到 execCommand */ }
+  }
+  if (legacyCopy(url)) { toast('SMB 地址已复制'); return; }
+  selectNodeText($('smbUrl'));
+  toast('已选中地址，按 Ctrl+C（手机长按）复制');
+});
+
+// ---------- 共享账号（受限访问：SMB / WebDAV 只看白名单文件夹） ----------
+// 账号存在 config 里、改动立即生效（SMB 认证器热刷新，不用重启服务）。
+// 文件夹白名单每人一份；展示名取路径基名，重名自动加后缀，所以列表里直接显示完整路径。
+
+async function loadScoped() {
+  const r = await api('/api/scoped');
+  if (r.code !== 0) return;
+  renderScoped((r.data && r.data.accounts) || []);
+}
+
+function renderScoped(accounts) {
+  const tb = $('tblScoped').querySelector('tbody');
+  tb.innerHTML = '';
+  if (!accounts.length) {
+    tb.innerHTML = '<tr><td colspan="3" class="muted">还没有共享账号。点下面的「添加共享账号」创建一个，再勾选允许访问的文件夹。</td></tr>';
+    return;
+  }
+  accounts.forEach((a) => {
+    const tr = document.createElement('tr');
+    const chips = (a.folders || []).map((f) =>
+      `<span class="scoped-chip mono" title="${esc(f.path)}">` +
+      `<button class="scoped-perm${f.readonly ? ' ro' : ''}" data-path="${esc(f.path)}" data-ro="${f.readonly ? 1 : 0}" ` +
+      `title="点一下切换：现在是「${f.readonly ? '只读' : '可读写'}」">${f.readonly ? '只读' : '读写'}</button>` +
+      `${esc(f.path)}` +
+      `<button class="scoped-x" data-path="${esc(f.path)}" title="移除">×</button></span>`
+    ).join('') || '<span class="muted">还没选文件夹——对方连上也只能看到空的「共享」</span>';
+    tr.innerHTML = `<td><b>${esc(a.user)}</b></td>
+      <td>${chips}<button class="btn sm scoped-addfolder" style="margin-top:4px">+ 添加文件夹</button></td>
+      <td><button class="btn sm danger" data-act="del">删除账号</button></td>`;
+    tr.querySelectorAll('.scoped-x').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const res = await api('/api/scoped/folder?user=' + encodeURIComponent(a.user) +
+          '&path=' + encodeURIComponent(b.dataset.path), {}, 'DELETE');
+        toast(res.msg);
+        if (res.code === 0) loadScoped();
+      });
+    });
+    // 点权限药丸就地切换读写 —— 不用重新选路径，改的是这一个文件夹
+    tr.querySelectorAll('.scoped-perm').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const nextRo = b.dataset.ro !== '1';
+        const res = await api('/api/scoped/perm',
+          { user: a.user, path: b.dataset.path, readonly: nextRo }, 'POST');
+        toast(res.msg);
+        if (res.code === 0) loadScoped();
+      });
+    });
+    tr.querySelector('.scoped-addfolder').addEventListener('click', () => {
+      openScopedFolderPicker(a.user);
+    });
+    tr.querySelector('[data-act=del]').addEventListener('click', async () => {
+      if (!confirm('确定删除共享账号「' + a.user + '」？\n对方的连接会立即失效，文件不受影响。')) return;
+      const res = await api('/api/scoped?user=' + encodeURIComponent(a.user), {}, 'DELETE');
+      toast(res.msg);
+      if (res.code === 0) loadScoped();
+    });
+    tb.appendChild(tr);
+  });
+}
+
+// 新建账号
+$('btnScopedAdd').addEventListener('click', () => {
+  $('scopedUser').value = '';
+  $('scopedPass').value = '';
+  $('scopedUserErr').textContent = '';
+  $('modalScopedUser').classList.add('on');
+  $('scopedUser').focus();
+});
+$('btnScopedUserCancel').addEventListener('click', () => $('modalScopedUser').classList.remove('on'));
+$('btnScopedUserOk').addEventListener('click', async () => {
+  $('scopedUserErr').textContent = '';
+  const user = $('scopedUser').value.trim();
+  const pass = $('scopedPass').value;
+  if (!user) { $('scopedUserErr').textContent = '请填写用户名'; return; }
+  if (pass.length < 4) { $('scopedUserErr').textContent = '密码至少 4 位'; return; }
+  // 接口对「已存在的用户名 + 密码」的语义是「改密码」，这里先挡一下，
+  // 免得手滑重名把别人的密码改了却毫无提示
+  const list = await api('/api/scoped');
+  const dup = list.code === 0 && (list.data.accounts || []).some(
+    (a) => a.user.toLowerCase() === user.toLowerCase());
+  if (dup) { $('scopedUserErr').textContent = '这个用户名已经有了，换个名字（要改密码请先删除再重建）'; return; }
+  const r = await api('/api/scoped', { user, pass });
+  if (r.code !== 0) { $('scopedUserErr').textContent = r.msg; return; }
+  $('modalScopedUser').classList.remove('on');
+  toast('已创建，接着给它勾选允许访问的文件夹');
+  await loadScoped();
+  // 顺手把选文件夹的弹窗带出来——新建账号八成下一步就是加文件夹
+  openScopedFolderPicker(user);
+});
+$('scopedPass').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') $('btnScopedUserOk').click();
+});
+
+// 选文件夹：复用 /api/browse 逐层进入，逻辑和「添加目录」一样，只是 DOM 分开
+let scopedBrowsePath = '';
+let scopedFolderUser = '';
+
+function openScopedFolderPicker(user) {
+  scopedFolderUser = user;
+  $('scopedFolderFor').textContent = '给账号「' + user + '」勾选';
+  $('scopedPath').value = '';
+  $('scopedFolderErr').textContent = '';
+  // 每次打开都回到默认「可读写」，别把上一个文件夹选的只读带过来
+  document.querySelectorAll('#scopedPermSeg .seg-btn').forEach((b) => {
+    b.classList.toggle('on', b.dataset.ro === '0');
+  });
+  scopedBrowsePath = '';
+  $('modalScopedFolder').classList.add('on');
+  loadScopedBrowse('');
+}
+$('btnScopedFolderCancel').addEventListener('click', () => $('modalScopedFolder').classList.remove('on'));
+
+// 权限分段：读写 / 只读，二选一
+$('scopedPermSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('.seg-btn');
+  if (!b) return;
+  document.querySelectorAll('#scopedPermSeg .seg-btn').forEach((x) => x.classList.toggle('on', x === b));
+});
+
+async function loadScopedBrowse(path) {
+  const r = await api('/api/browse?path=' + encodeURIComponent(path));
+  const box = $('scopedBrowser');
+  box.innerHTML = '';
+  if (r.code !== 0) { $('scopedBrowserPath').textContent = r.msg; return; }
+  const d = r.data;
+  scopedBrowsePath = d.path || '';
+  $('scopedBrowserPath').textContent = d.path ? '当前：' + d.path : '选择磁盘';
+  if (d.parent !== undefined && d.parent !== null && d.path) {
+    const up = document.createElement('div');
+    up.className = 'row';
+    up.textContent = '.. 上一级';
+    up.addEventListener('click', () => loadScopedBrowse(d.parent));
+    box.appendChild(up);
+  }
+  (d.items || []).forEach((it) => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.textContent = it.name;
+    row.addEventListener('click', () => {
+      $('scopedPath').value = it.path;
+      loadScopedBrowse(it.path);
+    });
+    box.appendChild(row);
+  });
+  if (!(d.items || []).length) {
+    box.innerHTML = '<div class="row" style="color:var(--text-3)">（没有子目录）</div>';
+  }
+}
+
+$('btnScopedFolderOk').addEventListener('click', async () => {
+  $('scopedFolderErr').textContent = '';
+  const path = $('scopedPath').value.trim();
+  if (!path) { $('scopedFolderErr').textContent = '请填写文件夹路径'; return; }
+  const roBtn = document.querySelector('#scopedPermSeg .seg-btn.on');
+  const readonly = roBtn ? roBtn.dataset.ro === '1' : false;
+  const r = await api('/api/scoped/folder', { user: scopedFolderUser, path, readonly });
+  if (r.code !== 0) { $('scopedFolderErr').textContent = r.msg; return; }
+  $('modalScopedFolder').classList.remove('on');
+  toast(r.msg);
+  loadScoped();
+});

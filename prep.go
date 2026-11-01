@@ -228,7 +228,7 @@ func trimCache() {
 //   - bg：有就给；没有就立刻回、后台慢慢生成（用户先流式看着，下次就能拖）
 func handleFSPrep(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	full, _, err := resolve(q.Get("root"), q.Get("path"))
+	full, _, err := resolveFor(webUserOf(r), q.Get("root"), q.Get("path"))
 	if err != nil {
 		writeJSON(w, 403, "无权访问该路径", nil)
 		return

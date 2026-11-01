@@ -138,16 +138,30 @@ func listStored(table, user string, limit int) ([]StoredEntry, error) {
 	defer rows.Close()
 
 	out := []StoredEntry{}
+	// 受限账号的「根」是它的白名单文件夹，展示名要用 scopedNameFor 对出来；
+	// admin 的 rootNameOf 走配置里的根名。
+	names := map[string]string{}
+	if user != cfg.User {
+		if folders, scoped := scopedFoldersFor(user); scoped {
+			names = scopedNameFor(folders)
+		}
+	}
 	for rows.Next() {
 		var e StoredEntry
 		if err = rows.Scan(&e.Root, &e.Path, &e.TS); err != nil {
 			return nil, err
 		}
 		e.RootName = rootNameOf(e.Root)
+		for real, disp := range names {
+			if strings.EqualFold(filepath.Clean(real), filepath.Clean(e.Root)) {
+				e.RootName = disp
+				break
+			}
+		}
 		e.RootDrive = driveOf(e.Root)
 		e.Name = filepath.Base(filepath.FromSlash(e.Path))
 		e.Kind = fileKind(e.Name, false)
-		full, _, rerr := resolve(e.Root, e.Path)
+		full, _, rerr := resolveFor(user, e.Root, e.Path)
 		if rerr != nil {
 			e.Missing = true
 		} else if st, serr := os.Stat(full); serr != nil {

@@ -17,23 +17,28 @@
 <body class="fs-body">
 
 <header class="fs-head">
-  <div class="fs-title">
-    <h1 id="dirTitle">文件</h1>
-    <span class="fs-sub" id="dirSub"></span>
-  </div>
-  <!-- 根目录切换：桌面端跟标题同一行（像浏览器标签），手机端整行换到第二行 -->
+  <!-- 盘符切换是「你在哪个盘」的唯一出处：标题行删掉了，这里选中项就是当前位置 -->
   <div class="fs-roots" id="rootsBar"></div>
   <div class="fs-head-actions">
     <button class="chip" id="btnRecent">最近</button>
     <!-- 叫「收藏夹」而不是「收藏」：面包屑那个「☆ 收藏」是动作，这个是列表，同名会混 -->
     <button class="chip" id="btnFav">收藏夹</button>
+    <!-- 排序：原来占独立一行「排序 名称↑ 时间」，手机上白吃 30px 高度。
+         收成一个按钮，点一下循环切（名称↑ → 名称↓ → 时间↓ → 时间↑），当前状态写在文字里 -->
+    <button class="icon-btn sort-btn" id="btnSort" title="切换排序">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 20V5M3.5 8.5L7 5l3.5 3.5"/><path d="M17 4v15M13.5 15.5L17 19l3.5-3.5"/></svg>
+      <span class="sort-txt" id="sortTxt">名称 ↑</span>
+    </button>
     <button class="icon-btn" id="btnRefresh" title="刷新">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
     </button>
     <button class="icon-btn" id="btnPoster" title="分享给朋友">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>
     </button>
-    <a class="icon-btn" href="/admin" title="管理台">
+    <button class="icon-btn" id="btnLogoutFs" title="切换账号 / 退出">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+    </button>
+    <a class="icon-btn" id="btnAdminLink" href="/admin" title="管理台">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 8.9 19a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 5 8.9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9.5a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
     </a>
     <!-- 桌面端的上传/新建放在顶栏（手机端藏在底部栏，这两个元素只在 ≥768px 显示） -->
@@ -44,18 +49,13 @@
   </div>
 </header>
 
-<!-- 导航行拆两行：路径一行、工具（收藏/排序）一行。
-     路径可能很长（长文件夹名、层级深），挤在一行时收藏星钉在滚动容器右缘、
-     路径文字从按钮底下穿过去，看着像按钮盖住了路径。分两行后路径整行自用。 -->
-<div class="fs-nav">
+<!-- 导航行：只有在子目录里才出现（根目录时面包屑只剩「D:\」，盘符条已经说明了，纯占地方）。
+     路径独占可滚动区，收藏星和项数靠右，互不挤压。 -->
+<div class="fs-nav" id="fsNav" hidden>
   <div class="fs-crumb" id="crumb"></div>
   <div class="fs-tools">
     <button class="crumb-star" id="crumbStar" hidden></button>
-    <div class="fs-sort" id="sortBar">
-      <span class="fs-sort-lbl">排序</span>
-      <button class="chip" data-sort="name">名称</button>
-      <button class="chip" data-sort="time">时间</button>
-    </div>
+    <span class="fs-count" id="dirCount"></span>
   </div>
 </div>
 
@@ -91,10 +91,23 @@
   </div>
 </div>
 
-<footer class="fs-actions">
-  <label class="btn primary" id="btnUpload" for="filePicker" data-upload>上传文件</label>
-  <button class="btn" id="btnMkdir" data-mkdir>新建文件夹</button>
-</footer>
+<!-- 悬浮操作按钮（手机端）：网页端定位是浏览，上传大文件走 SMB/WebDAV，
+     上传/新建这两个低频动作收进一个「+」，点开展开、点别处收起 -->
+<div class="fs-fab" id="fsFab">
+  <div class="fab-menu">
+    <label class="fab-item" for="filePicker" data-upload>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>
+      <span>上传文件</span>
+    </label>
+    <button class="fab-item" data-mkdir>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><path d="M12 11v6M9 14h6"/></svg>
+      <span>新建文件夹</span>
+    </button>
+  </div>
+  <button class="fab-btn" id="fabBtn" aria-label="上传或新建">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+  </button>
+</div>
 
 <div class="overlay" id="recent">
   <div class="modal" style="max-width:430px">
@@ -177,10 +190,10 @@
 
 <div id="login">
   <form class="login-box" id="loginForm">
-    <h2>selfnas</h2>
-    <p class="sub">输入后台密码即可，下次自动登录</p>
+    <div class="brandmark">Self<b>NAS</b></div>
+    <p class="sub">登录后浏览电脑里的文件，权限跟账号走</p>
     <div class="field"><label>账号</label><input type="text" id="loginUser" value="admin" autocomplete="username"></div>
-    <div class="field"><label>密码</label><input type="password" id="loginPass" autocomplete="current-password" placeholder="就是管理台那个密码"></div>
+    <div class="field"><label>密码</label><input type="password" id="loginPass" autocomplete="current-password" placeholder="管理员或共享账号的密码"></div>
     <button class="btn primary" type="submit">登录</button>
     <div class="err" id="loginErr"></div>
   </form>

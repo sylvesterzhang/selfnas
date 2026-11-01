@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,8 +32,21 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.User != cfg.User || !verifyPassword(body.Pass, cfg.PassHash) {
-		markFail(ip)
-		writeJSON(w, 401, "账号或密码错误", nil)
+		// 不是 admin：试试受限账号（它们能登文件站网页端，权限由白名单决定）。
+		// 认证失败共用同一套失败锁定，不给暴力破解多留口子。
+		if !scopedVerify(body.User, body.Pass) {
+			markFail(ip)
+			writeJSON(w, 401, "账号或密码错误", nil)
+			return
+		}
+		clearFail(ip)
+		user := scopedNormalizeUser(body.User)
+		exp := setSessionCookieAs(w, user)
+		writeJSON(w, 0, "登录成功", map[string]any{
+			"user": user,
+			"exp":  exp,
+			"days": cfg.SessionDays,
+		})
 		return
 	}
 	clearFail(ip)
@@ -86,6 +100,7 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 		"settings": map[string]any{
 			"adminOnlyLocal":    cfg.AdminOnlyLocal,
 			"uploadConcurrency": cfg.UploadConcurrency,
+			"theme":             cfg.Theme,
 		},
 		// 自启动状态随 state 一起带回去，管理台少发一次请求
 		"autostart": autostartGet(),
@@ -234,6 +249,7 @@ func handleRootAdd(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, "保存失败: "+err.Error(), nil)
 		return
 	}
+	smbReload()
 	writeJSON(w, 0, "已添加", nil)
 }
 
@@ -279,6 +295,7 @@ func handleRootsRescan(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, "保存失败: "+err.Error(), nil)
 		return
 	}
+	smbReload()
 	writeJSON(w, 0, "ok", map[string]any{"added": added})
 }
 
@@ -322,6 +339,7 @@ func handleRootUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, "保存失败: "+err.Error(), nil)
 		return
 	}
+	smbReload() // 共享名/只读/启停都可能变，SMB 那边要重建
 	writeJSON(w, 0, "已保存（立即生效）", nil)
 }
 
@@ -358,6 +376,7 @@ func handleRootDelete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, "保存失败: "+err.Error(), nil)
 		return
 	}
+	smbReload()
 	writeJSON(w, 0, "已移除（仅移除配置，不删除任何文件）", nil)
 }
 
@@ -380,11 +399,23 @@ func handlePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	cfgMu.Lock()
 	cfg.PassHash = hashPassword(body.New)
+	// SMB 的 NTLM 凭据是从明文密码算的，改密码必须同步重算，
+	// 否则手机端会一直用旧密码登录失败（2026-10-29 加入 SMB 时一并处理）。
+	if cfg.SMB.Enabled {
+		cfg.SMB.NTHash = ntHashOf(body.New)
+	}
 	err := saveConfigLocked()
 	cfgMu.Unlock()
 	if err != nil {
 		writeJSON(w, 500, "保存失败: "+err.Error(), nil)
 		return
+	}
+	// 认证表是启动时建的，凭据变了要重起一次 SMB 才生效
+	if smbRunningNow() {
+		smbStop()
+		if e := smbStart(); e != nil {
+			log.Printf("[smb] 改密码后重起失败：%v", e)
+		}
 	}
 	http.SetCookie(w, &http.Cookie{Name: "sn_token", Value: "", Path: "/", MaxAge: -1})
 	writeJSON(w, 0, "密码已更新，请重新登录", nil)
@@ -396,9 +427,10 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		AdminOnlyLocal    *bool `json:"adminOnlyLocal"`
-		UploadConcurrency *int  `json:"uploadConcurrency"`
-		SessionDays       *int  `json:"sessionDays"`
+		AdminOnlyLocal    *bool   `json:"adminOnlyLocal"`
+		UploadConcurrency *int    `json:"uploadConcurrency"`
+		SessionDays       *int    `json:"sessionDays"`
+		Theme             *string `json:"theme"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, 400, "请求格式错误", nil)
@@ -429,6 +461,15 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 			n = 36500
 		}
 		cfg.SessionDays = n
+	}
+	if body.Theme != nil {
+		t := strings.TrimSpace(*body.Theme)
+		if !themeAllowed(t) {
+			cfgMu.Unlock()
+			writeJSON(w, 400, "未知的皮肤："+t, nil)
+			return
+		}
+		cfg.Theme = t
 	}
 	err := saveConfigLocked()
 	cfgMu.Unlock()
@@ -502,3 +543,182 @@ func driveOf(p string) string {
 }
 
 func volumeSpace(p string) (uint64, uint64) { return volumeSpaceOS(p) }
+
+// handleSMB 管理台「SMB 共享」开关。
+//
+// 语义：开启时需要一次当前登录密码 —— 因为 SMB 的 NTLM 要求服务器持有
+// MD4(UTF-16LE(密码))，而网页只存了 PBKDF2，算不出来。拿到密码后校验并
+// 存下 NT hash，同时把 SMB 置为启用；之后重启服务不再需要密码。
+func handleSMB(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		st := smbStatus()
+		port := cfg.SMB.Port
+		if port <= 0 {
+			port = smbDefaultPort
+		}
+		st["portFree"] = smbPortFree(port)
+		writeJSON(w, 0, "ok", st)
+	case http.MethodPost:
+		var body struct {
+			Enable *bool  `json:"enable"`
+			Pass   string `json:"pass"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Enable == nil {
+			writeJSON(w, 400, "请求格式错误（需要 enable 字段）", nil)
+			return
+		}
+		if !*body.Enable {
+			smbStop()
+			cfgMu.Lock()
+			cfg.SMB.Enabled = false
+			ours := cfg.SMB.TookOver
+			port := cfg.SMB.Port
+			if port <= 0 {
+				port = smbDefaultPort
+			}
+			err := saveConfigLocked()
+			cfgMu.Unlock()
+			if err != nil {
+				writeJSON(w, 500, "保存失败: "+err.Error(), nil)
+				return
+			}
+			log.Printf("[smb] 已关闭")
+
+			// 把我们顶掉的 Windows 自带共享还回去。
+			// 判据两个：这次确实是我们接管的（TookOver），或者关完之后 445 空着没人要
+			// —— 后者说明系统共享此刻就是停着的，不恢复的话用户的「网络邻居」永远用不了。
+			msg := "SMB 已关闭"
+			if ours || smbPortFree(port) {
+				if m, e := smbRestoreWindows(); e != nil {
+					setSmbTookOver(true) // 还欠一次恢复，前端据此提示重试
+					log.Printf("[smb] 恢复系统自带共享失败：%v", e)
+					msg = "SMB 已关闭，但 Windows 自带共享没恢复成功：" + e.Error()
+					writeJSON(w, 0, msg, smbStatus())
+					return
+				} else {
+					setSmbTookOver(false)
+					if m != "" {
+						msg += "；" + m
+					}
+					log.Printf("[smb] %s", m)
+				}
+			}
+			writeJSON(w, 0, msg, smbStatus())
+			return
+		}
+
+		// 开启：优先用已存的 NT hash；没存过就必须验一次密码
+		hash := strings.TrimSpace(cfg.SMB.NTHash)
+		if body.Pass != "" {
+			if !verifyPassword(body.Pass, cfg.PassHash) {
+				writeJSON(w, 403, "密码不对", nil)
+				return
+			}
+			hash = ntHashOf(body.Pass)
+		}
+		if hash == "" {
+			writeJSON(w, 400, "开启 SMB 需要输入一次当前登录密码（SMB 用它算认证凭据）", nil)
+			return
+		}
+
+		cfgMu.Lock()
+		cfg.SMB.Enabled = true
+		cfg.SMB.NTHash = hash
+		if cfg.SMB.Port <= 0 {
+			cfg.SMB.Port = smbDefaultPort
+		}
+		err := saveConfigLocked()
+		cfgMu.Unlock()
+		if err != nil {
+			writeJSON(w, 500, "保存失败: "+err.Error(), nil)
+			return
+		}
+
+		if err := smbStart(); err != nil {
+			// Windows 上 445 基本总是被系统自带的文件共享占着。前端点「开启」时
+			// 已经用对话框把「会接管系统共享」说清楚了，所以这里直接接管再起一次，
+			// 不再让用户去找第二个按钮。
+			port := cfg.SMB.Port
+			if port <= 0 {
+				port = smbDefaultPort
+			}
+			if runtime.GOOS == "windows" && !smbPortFree(port) {
+				if m, e2 := smbTakeoverWindows(); e2 == nil {
+					log.Printf("[smb] 接管 445：%s", m)
+					setSmbTookOver(true)
+					err = smbStart()
+				} else {
+					log.Printf("[smb] 接管 445 失败：%v", e2)
+					writeJSON(w, 500, e2.Error(), smbStatus())
+					return
+				}
+			}
+			if err != nil {
+				log.Printf("[smb] 启动失败：%v", err)
+				writeJSON(w, 500, err.Error(), smbStatus())
+				return
+			}
+		}
+		log.Printf("[smb] 已启动，共享见管理台")
+		writeJSON(w, 0, "SMB 已开启", smbStatus())
+	default:
+		writeJSON(w, 405, "只支持 GET/POST", nil)
+	}
+}
+
+// handleSMBTakeover 停掉 Windows 自带的 SMB 服务，把 445 让给 selfnas（需要 UAC 授权）。
+// setSmbTookOver 记下「系统自带 SMB 现在是关着的（被我们顶掉的）」，
+// 关闭 SMB / 恢复系统共享时据此判断要不要还回去。
+func setSmbTookOver(v bool) {
+	cfgMu.Lock()
+	cfg.SMB.TookOver = v
+	err := saveConfigLocked()
+	cfgMu.Unlock()
+	if err != nil {
+		log.Printf("[smb] 保存 tookOver 失败：%v", err)
+	}
+}
+
+// handleSMBRestore 手动把 445 还给 Windows 自带的文件共享（关闭时自动还失败了才用得上）。
+func handleSMBRestore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, 405, "只支持 POST", nil)
+		return
+	}
+	msg, err := smbRestoreWindows()
+	if err != nil {
+		log.Printf("[smb] 恢复系统自带共享失败：%v", err)
+		writeJSON(w, 500, err.Error(), smbStatus())
+		return
+	}
+	setSmbTookOver(false)
+	log.Printf("[smb] 已恢复系统自带共享：%s", msg)
+	if msg == "" {
+		msg = "已恢复"
+	}
+	writeJSON(w, 0, msg, smbStatus())
+}
+
+func handleSMBTakeover(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, 405, "只支持 POST", nil)
+		return
+	}
+	msg, err := smbTakeoverWindows()
+	if err != nil {
+		log.Printf("[smb] 接管 445 失败：%v", err)
+		writeJSON(w, 500, err.Error(), smbStatus())
+		return
+	}
+	log.Printf("[smb] 接管 445 成功：%s", msg)
+	setSmbTookOver(true)
+	// 已经在等 445 的话，顺手把它拉起来
+	if cfg.SMB.Enabled && !smbRunningNow() {
+		if e := smbStart(); e != nil {
+			writeJSON(w, 0, msg+"，但 SMB 仍未起来："+e.Error(), smbStatus())
+			return
+		}
+	}
+	writeJSON(w, 0, msg, smbStatus())
+}

@@ -1,0 +1,247 @@
+// Copyright (c) 2016 Hiroshi Ioka. All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are
+// met:
+//
+//   - Redistributions of source code must retain the above copyright
+//
+// notice, this list of conditions and the following disclaimer.
+//   - Redistributions in binary form must reproduce the above
+//
+// copyright notice, this list of conditions and the following disclaimer
+// in the documentation and/or other materials provided with the
+// distribution.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+package ntlmssp
+
+import (
+	"bytes"
+	"crypto/rc4"
+	"fmt"
+)
+
+type Session struct {
+	isClientSide       bool
+	user               string
+	negotiateFlags     uint32
+	exportedSessionKey []byte
+	clientSigningKey   []byte
+	serverSigningKey   []byte
+
+	clientHandle *rc4.Cipher
+	serverHandle *rc4.Cipher
+}
+
+func (s *Session) User() string {
+	return s.user
+}
+
+func (s *Session) SessionKey() []byte {
+	return s.exportedSessionKey
+}
+
+type InfoMap struct {
+	NbComputerName  string
+	NbDomainName    string
+	DnsComputerName string
+	DnsDomainName   string
+	DnsTreeName     string
+}
+
+func (s *Session) Sum(plaintext []byte, seqNum uint32) ([]byte, uint32) {
+	if s.negotiateFlags&FlgNegSign == 0 {
+		return nil, 0
+	}
+	// Don't use MIC if using anonymous authentication
+	if s.negotiateFlags&FlgNegAnonymous != 0 {
+		return nil, 0
+	}
+
+	if s.isClientSide {
+		return mac(nil, s.negotiateFlags, s.clientHandle, s.clientSigningKey, seqNum, plaintext)
+	}
+
+	return mac(nil, s.negotiateFlags, s.serverHandle, s.serverSigningKey, seqNum, plaintext)
+}
+
+func (s *Session) CheckSum(sum, plaintext []byte, seqNum uint32) (bool, uint32) {
+	if s.negotiateFlags&FlgNegSign == 0 {
+		if sum == nil {
+			return true, 0
+		}
+		return false, 0
+	}
+
+	if s.isClientSide {
+		ret, seqNum := mac(nil, s.negotiateFlags, s.serverHandle, s.serverSigningKey, seqNum, plaintext)
+		if !bytes.Equal(sum, ret) {
+			return false, 0
+		}
+		return true, seqNum
+	}
+	ret, seqNum := mac(nil, s.negotiateFlags, s.clientHandle, s.clientSigningKey, seqNum, plaintext)
+	if !bytes.Equal(sum, ret) {
+		return false, 0
+	}
+	return true, seqNum
+}
+
+func (s *Session) Seal(dst, plaintext []byte, seqNum uint32) ([]byte, uint32) {
+	ret, ciphertext := sliceForAppend(dst, len(plaintext)+16)
+
+	switch {
+	case s.negotiateFlags&FlgNegSeal != 0:
+		s.clientHandle.XORKeyStream(ciphertext[16:], plaintext)
+		if s.isClientSide {
+			_, seqNum = mac(ciphertext[:0], s.negotiateFlags, s.clientHandle, s.clientSigningKey, seqNum, plaintext)
+		} else {
+			_, seqNum = mac(ciphertext[:0], s.negotiateFlags, s.serverHandle, s.serverSigningKey, seqNum, plaintext)
+		}
+	case s.negotiateFlags&FlgNegSign != 0:
+		copy(ciphertext[16:], plaintext)
+
+		if s.isClientSide {
+			_, seqNum = mac(ciphertext[:0], s.negotiateFlags, s.clientHandle, s.clientSigningKey, seqNum, plaintext)
+		} else {
+			_, seqNum = mac(ciphertext[:0], s.negotiateFlags, s.serverHandle, s.serverSigningKey, seqNum, plaintext)
+		}
+	}
+
+	return ret, seqNum
+}
+
+// --- DCERPC per-PDU encryption methods ---
+// These differ from Seal/Unseal (used by SMB) because DCERPC requires the MAC
+// to cover the full PDU (header + stub + pad + sec_trailer), while only the
+// stub + auth_pad is encrypted. The split into EncryptAndSign / DecryptOnly /
+// VerifyMAC allows the caller to construct the sign data from the PDU layout.
+
+// EncryptAndSign encrypts toEncrypt and computes a MAC over toSign using the
+// send-side handle. This is used by DCERPC where the encrypted data (stub+pad)
+// differs from the signed data (full PDU: header + plaintext stub + pad + sec_trailer).
+// The RC4 handle advances by len(toEncrypt) + 8 per call.
+func (s *Session) EncryptAndSign(toEncrypt, toSign []byte, seqNum uint32) (ciphertext, signature []byte, newSeqNum uint32) {
+	ciphertext = make([]byte, len(toEncrypt))
+	if s.isClientSide {
+		s.clientHandle.XORKeyStream(ciphertext, toEncrypt)
+		signature, newSeqNum = mac(nil, s.negotiateFlags, s.clientHandle, s.clientSigningKey, seqNum, toSign)
+	} else {
+		s.serverHandle.XORKeyStream(ciphertext, toEncrypt)
+		signature, newSeqNum = mac(nil, s.negotiateFlags, s.serverHandle, s.serverSigningKey, seqNum, toSign)
+	}
+	return
+}
+
+// DecryptAndVerify decrypts ciphertext and verifies a MAC over signData using
+// the receive-side handle. The caller must build signData from the decrypted
+// plaintext before calling, so this method provides DecryptOnly as a first step.
+// However, for DCERPC, the caller needs the plaintext to build signData, so use
+// DecryptOnly + VerifyMAC instead.
+func (s *Session) DecryptOnly(ciphertext []byte) []byte {
+	plaintext := make([]byte, len(ciphertext))
+	if s.isClientSide {
+		s.serverHandle.XORKeyStream(plaintext, ciphertext)
+	} else {
+		s.clientHandle.XORKeyStream(plaintext, ciphertext)
+	}
+	return plaintext
+}
+
+// SignOnly computes a MAC over toSign without encrypting any data.
+// Used for DCERPC PktIntegrity where the stub is signed but not encrypted.
+func (s *Session) SignOnly(toSign []byte, seqNum uint32) (signature []byte, newSeqNum uint32) {
+	if s.isClientSide {
+		signature, newSeqNum = mac(nil, s.negotiateFlags, s.clientHandle, s.clientSigningKey, seqNum, toSign)
+	} else {
+		signature, newSeqNum = mac(nil, s.negotiateFlags, s.serverHandle, s.serverSigningKey, seqNum, toSign)
+	}
+	return
+}
+
+// VerifyMACOnly computes a MAC over signData and compares it with the expected
+// signature, without any prior decryption step. Used for DCERPC PktIntegrity
+// where the stub was not encrypted.
+func (s *Session) VerifyMACOnly(signData, expectedSig []byte, seqNum uint32) (uint32, error) {
+	var computedSig []byte
+	if s.isClientSide {
+		computedSig, seqNum = mac(nil, s.negotiateFlags, s.serverHandle, s.serverSigningKey, seqNum, signData)
+	} else {
+		computedSig, seqNum = mac(nil, s.negotiateFlags, s.clientHandle, s.clientSigningKey, seqNum, signData)
+	}
+	if !bytes.Equal(expectedSig, computedSig) {
+		return 0, fmt.Errorf("signature mismatch")
+	}
+	return seqNum, nil
+}
+
+// VerifyMAC computes a MAC over signData and compares it with the expected
+// signature. Must be called after DecryptOnly so the receive-side RC4 handle
+// is at the correct keystream position.
+func (s *Session) VerifyMAC(signData, expectedSig []byte, seqNum uint32) (uint32, error) {
+	var computedSig []byte
+	if s.isClientSide {
+		computedSig, seqNum = mac(nil, s.negotiateFlags, s.serverHandle, s.serverSigningKey, seqNum, signData)
+	} else {
+		computedSig, seqNum = mac(nil, s.negotiateFlags, s.clientHandle, s.clientSigningKey, seqNum, signData)
+	}
+	if !bytes.Equal(expectedSig, computedSig) {
+		return 0, fmt.Errorf("signature mismatch")
+	}
+	return seqNum, nil
+}
+
+func (s *Session) Unseal(dst, ciphertext []byte, seqNum uint32) ([]byte, uint32, error) {
+	ret, plaintext := sliceForAppend(dst, len(ciphertext)-16)
+
+	switch {
+	case s.negotiateFlags&FlgNegSeal != 0:
+		s.serverHandle.XORKeyStream(plaintext, ciphertext[16:])
+
+		var sum []byte
+
+		if s.isClientSide {
+			sum, seqNum = mac(nil, s.negotiateFlags, s.serverHandle, s.serverSigningKey, seqNum, plaintext)
+		} else {
+			sum, seqNum = mac(nil, s.negotiateFlags, s.clientHandle, s.clientSigningKey, seqNum, plaintext)
+		}
+		if !bytes.Equal(ciphertext[:16], sum) {
+			err := fmt.Errorf("signature mismatch")
+			return nil, 0, err
+		}
+	case s.negotiateFlags&FlgNegSign != 0:
+		copy(plaintext, ciphertext[16:])
+
+		var sum []byte
+
+		if s.isClientSide {
+			sum, seqNum = mac(nil, s.negotiateFlags, s.serverHandle, s.serverSigningKey, seqNum, plaintext)
+		} else {
+			sum, seqNum = mac(nil, s.negotiateFlags, s.clientHandle, s.clientSigningKey, seqNum, plaintext)
+		}
+		if !bytes.Equal(ciphertext[:16], sum) {
+			err := fmt.Errorf("signature mismatch")
+			return nil, 0, err
+		}
+	default:
+		copy(plaintext, ciphertext[16:])
+		for _, s := range ciphertext[:16] {
+			if s != 0x0 {
+				return nil, 0, fmt.Errorf("signature mismatch")
+			}
+		}
+	}
+
+	return ret, seqNum, nil
+}

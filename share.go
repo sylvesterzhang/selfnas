@@ -32,7 +32,7 @@ func signPath(full string, size int64, exp int64) string {
 // handleFSLink 生成一条给外部播放器用的直链（绝对地址，因为 App 只知道这个 URL）。
 func handleFSLink(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	full, _, err := resolve(q.Get("root"), q.Get("path"))
+	full, _, err := resolveFor(webUserOf(r), q.Get("root"), q.Get("path"))
 	if err != nil {
 		writeJSON(w, 403, "无权访问该路径", nil)
 		return

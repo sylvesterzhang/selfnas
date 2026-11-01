@@ -1,0 +1,132 @@
+// MIT License
+//
+// # Copyright (c) 2025 Jimmy Fjällid
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+package mswkst
+
+import (
+	"fmt"
+
+	"github.com/jfjallid/go-smb/dcerpc"
+	"github.com/jfjallid/golog"
+)
+
+var log = golog.Get("github.com/jfjallid/go-smb/dcerpc/mswkst").SetDisplayName("mswkst")
+
+const (
+	MSRPCUuidWksSvc                = "6BFFD098-A112-3610-9833-46C3F87E345A"
+	MSRPCWksSvcPipe                = "wkssvc"
+	MSRPCWksSvcMajorVersion uint16 = 1
+	MSRPCWksSvcMinorVersion uint16 = 0
+)
+
+// MSRPC Workstation Service Remote (wkssvc) Operations
+const (
+	WksSvcWkstaUserEnum uint16 = 2
+)
+
+// MS-WKST Section 2.2.5.14
+const (
+	WkstaUserEnumInfoLevel0 uint32 = 0
+	WkstaUserEnumInfoLevel1 uint32 = 1
+)
+
+const WkstaMaxPreferredLength uint32 = 0xFFFFFFFF
+
+const (
+	ErrorSuccess          uint32 = 0x0   // The operation completed successfully
+	ErrorAccessDenied     uint32 = 0x5   // Access is denied
+	ErrorInvalidParameter uint32 = 0x57  // One of the function parameters is not valid.
+	ErrorInvalidLevel     uint32 = 0x7c  // The information level is invalid.
+	ErrorMoreData         uint32 = 0xea  // More entries are available. The UserInfo buffer was not large enough to contain all the entries.
+	ErrorBufTooSmall      uint32 = 0x84b // More entries are available. The TransportInfo buffer was not large enough to contain all the entries.
+)
+
+var ResponseCodeMap = map[uint32]error{
+	ErrorSuccess:          fmt.Errorf("The operation completed successfully"),
+	ErrorAccessDenied:     fmt.Errorf("Access is denied"),
+	ErrorInvalidParameter: fmt.Errorf("One of the function parameters is not valid."),
+	ErrorInvalidLevel:     fmt.Errorf("The information level is invalid."),
+	ErrorMoreData:         fmt.Errorf("More entries are available. The UserInfo buffer was not large enough to contain all the entries."),
+	ErrorBufTooSmall:      fmt.Errorf("More entries are available. The TransportInfo buffer was not large enough to contain all the entries."),
+}
+
+// checkReturnCode maps a non-zero WKST return code to a *dcerpc.StatusError
+// carrying op, the raw code, and the mapped sentinel from ResponseCodeMap
+// (nil when unmapped). Codes in okCodes are treated as success in addition
+// to ErrorSuccess.
+func checkReturnCode(op string, code uint32, okCodes ...uint32) error {
+	if code == ErrorSuccess {
+		return nil
+	}
+	for _, ok := range okCodes {
+		if code == ok {
+			return nil
+		}
+	}
+	return &dcerpc.StatusError{Op: op, Code: code, Err: ResponseCodeMap[code]}
+}
+
+func NewRPCCon(sb *dcerpc.ServiceBind) *RPCCon {
+	return &RPCCon{sb}
+}
+
+func (sb *RPCCon) EnumWkstLoggedOnUsers(level int) (res *WkstaUserEnum, err error) {
+	log.Traceln("In EnumWkstLoggedOnUsers")
+	if level < 0 || level > 1 {
+		return nil, fmt.Errorf("EnumWkstLoggedOnUsers: only levels 0 and 1 are valid")
+	}
+
+	req := NetWkstaUserEnumRequest{
+		ServerName:             nil,
+		UserInfo:               WkstaUserEnum{Level: uint32(level)},
+		PreferredMaximumLength: WkstaMaxPreferredLength,
+		ResumeHandle:           nil,
+	}
+	switch level {
+	case 0:
+		req.UserInfo.Level0 = &WkstaUserInfo0Container{}
+	case 1:
+		req.UserInfo.Level1 = &WkstaUserInfo1Container{}
+	}
+
+	innerBuf, err := req.Marshal()
+	if err != nil {
+		return
+	}
+
+	buffer, err := sb.MakeRequest(WksSvcWkstaUserEnum, innerBuf)
+	if err != nil {
+		return
+	}
+
+	var resp NetWkstaUserEnumResponse
+	err = resp.Unmarshal(buffer)
+	if err != nil {
+		return
+	}
+
+	if err = checkReturnCode("NetWkstaEnum", resp.ReturnCode); err != nil {
+		return
+	}
+
+	return &resp.UserInfo, nil
+}

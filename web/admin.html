@@ -10,7 +10,11 @@
 
 <div class="shell">
   <aside class="side">
-    <div class="brand">selfnas<small id="verLine">加载中…</small></div>
+    <!-- 品牌位：文字排字标（Self 常规灰蓝 + NAS 粗体亮蓝），配色跟主题走，见 style.css -->
+    <div class="brand">
+      <div class="brandmark">Self<b>NAS</b></div>
+      <small id="verLine">加载中…</small>
+    </div>
     <nav class="nav">
       <button data-tab="overview" class="active">概览</button>
       <button data-tab="roots">根目录</button>
@@ -45,6 +49,49 @@
             <a class="btn sm" id="btnQrDown" download="selfnas-qr.png">保存二维码</a>
             <button class="btn sm" id="btnQrCopy" title="把地址复制到剪贴板，方便发给聊天窗口">复制链接</button>
           </div>
+        </div>
+      </div>
+
+      <!-- WebDAV：让手机/电脑上的现成 App 直接挂载这套目录。
+           比浏览器上传强的地方是传输走系统后台——锁屏、切 App 都不会断。
+           ⚠️ iPhone 自带「文件」App 不认 WebDAV（只支持 SMB），iOS 用户请看下面那张卡 -->
+      <div class="dav-card">
+        <div class="dav-head">
+          <span class="dav-title">WebDAV 挂载</span>
+          <span class="dav-badge">默认开启</span>
+          <a class="qr-url mono" id="davUrl" href="#" target="_blank" rel="noopener">加载中…</a>
+          <button class="btn sm" id="btnDavCopy" title="复制 WebDAV 地址">复制地址</button>
+        </div>
+        <div class="qr-tip">
+          <b>安卓</b>：Cx 文件管理器 / Solid Explorer → 新建 WebDAV，填上面地址；
+          <b>Windows</b>：映射网络驱动器（需先允许 http 明文 Basic 认证，见 README）；
+          <b>macOS</b>：Finder ⌘K；<b>Infuse / VLC</b> 也能挂这个地址直接播。<br>
+          <span class="muted">装好就能用，不用配置。iPhone 自带的「文件」App 只支持 SMB、不认 WebDAV，iOS 请用下面那张卡。</span>
+        </div>
+      </div>
+
+      <!-- SMB：iPhone / iPad 的「文件」App 原生支持，锁屏照传。
+           445 端口在 Windows 上会被系统自带的 SMB 服务占着，所以要能一键接管 -->
+      <div class="dav-card">
+        <div class="dav-head">
+          <span class="dav-title">SMB 共享</span>
+          <span class="dav-badge" id="smbBadge">默认关闭</span>
+          <a class="qr-url mono" id="smbUrl" href="#" target="_blank" rel="noopener">加载中…</a>
+          <button class="btn sm" id="btnSmbCopy" title="复制 SMB 地址">复制地址</button>
+          <button class="btn sm primary" id="btnSmbToggle">开启</button>
+        </div>
+        <div class="qr-tip" id="smbTip">正在读取状态…</div>
+        <div class="smb-pass-row" id="smbPassRow" hidden>
+          <input class="inp" id="smbPass" type="password" placeholder="输入当前后台密码（用来生成 SMB 认证凭据）" autocomplete="current-password">
+          <button class="btn sm primary" id="btnSmbPassOk">确认开启</button>
+        </div>
+        <div class="smb-pass-row" id="smbTakeoverRow" hidden>
+          <button class="btn sm" id="btnSmbTakeover">接管 445 端口</button>
+          <span class="muted">停掉 Windows 自带的文件共享并设为开机不启动（需管理员授权）；重启后手机连不上时也点这里</span>
+        </div>
+        <div class="smb-pass-row" id="smbRestoreRow" hidden>
+          <button class="btn sm" id="btnSmbRestore">恢复 Windows 自带共享</button>
+          <span class="muted">把 445 还给系统、服务改回自动启动（需管理员授权）。关掉 SMB 时应该自动做这一步，失败了才需要你点</span>
         </div>
       </div>
 
@@ -99,6 +146,17 @@
         <div class="err" id="pwErr"></div>
         <p class="hint">密码以 PBKDF2-SHA256（12 万次迭代 + 随机盐）存储，修改后所有会话失效，需要重新登录。</p>
       </div>
+
+      <h2 class="section-title" style="margin-top:40px">共享账号</h2>
+      <p class="muted" style="margin-top:-4px;margin-bottom:12px">
+        给家人朋友发独立账号：他们用 SMB 或 WebDAV 连接时，只能看到一个「共享」入口，
+        里面只有你勾选的文件夹，其余都看不到。管理台不受影响，仍然只有你这个管理员能进。
+      </p>
+      <table id="tblScoped">
+        <thead><tr><th style="width:140px">账号</th><th>允许访问的文件夹</th><th style="width:210px"></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <button class="btn primary" id="btnScopedAdd" style="margin-top:12px">添加共享账号</button>
     </section>
 
     <section class="panel" id="panel-system">
@@ -127,6 +185,45 @@
         开启后写一条 Windows 计划任务（优先），开机 20 秒后自动在后台拉起本程序，无窗口、不限运行时长。
         exe 换了位置就重新点一下开关即可纠正指向。
       </p>
+
+      <!-- Linux / macOS：配置文件由我们生成，但装进系统要用户自己在终端敲一条命令。
+           每条命令都带用途说明；未安装时还额外给一条「仅现在启动」（不开机自启）。 -->
+      <div id="autostartCmdBox" hidden style="margin-top:-6px;margin-bottom:16px">
+        <div class="hint" id="autostartCmdHint" style="margin-top:0;margin-bottom:8px"></div>
+        <div id="autostartCmdList"></div>
+      </div>
+
+      <h2 class="section-title" style="margin-top:24px">文件站外观</h2>
+      <p class="muted" style="margin-top:-4px;margin-bottom:10px">
+        files 页面的配色皮肤，全局生效。<b>电子书</b>还会换成衬线字体。只改颜色和字体，不动布局。
+      </p>
+      <div class="theme-row" id="themeRow">
+        <button class="theme-card" data-theme="light">
+          <span class="dots"><span class="dot" style="background:#f7f6fb"></span><span class="dot" style="background:#ffffff"></span><span class="dot" style="background:#5a50c8"></span></span>
+          雾紫
+        </button>
+        <button class="theme-card" data-theme="blue">
+          <span class="dots"><span class="dot" style="background:#e3edf8"></span><span class="dot" style="background:#ffffff"></span><span class="dot" style="background:#0d7ec2"></span></span>
+          海盐蓝
+        </button>
+        <button class="theme-card" data-theme="pink">
+          <span class="dots"><span class="dot" style="background:#faf1f3"></span><span class="dot" style="background:#ffffff"></span><span class="dot" style="background:#b04a6e"></span></span>
+          樱花粉
+        </button>
+        <button class="theme-card" data-theme="ebook">
+          <span class="dots"><span class="dot" style="background:#f2ead6"></span><span class="dot" style="background:#faf5e7"></span><span class="dot" style="background:#8a6d3b"></span></span>
+          电子书
+        </button>
+        <button class="theme-card" data-theme="green">
+          <span class="dots"><span class="dot" style="background:#edf1ec"></span><span class="dot" style="background:#ffffff"></span><span class="dot" style="background:#0f6e56"></span></span>
+          墨绿
+        </button>
+        <button class="theme-card" data-theme="dark">
+          <span class="dots"><span class="dot" style="background:#0a0a0a"></span><span class="dot" style="background:#17171a"></span><span class="dot" style="background:#85b7eb"></span></span>
+          夜间
+        </button>
+      </div>
+      <p class="hint" style="margin-top:8px">改完点下面的「保存设置」，手机端刷新 files 页面生效。</p>
 
       <h2 class="section-title">传输与会话</h2>
       <div class="grid2" style="max-width:620px">
@@ -261,9 +358,50 @@
   </div>
 </div>
 
+<div class="overlay" id="modalScopedUser">
+  <div class="modal">
+    <h3>添加共享账号</h3>
+    <div class="sub">对方用这个账号 + 密码连 SMB 或 WebDAV，只能看到你勾选的文件夹</div>
+    <div class="field"><label>用户名</label><input type="text" id="scopedUser" placeholder="例如：guest" autocomplete="off"></div>
+    <div class="field"><label>密码（至少 4 位）</label><input type="password" id="scopedPass" autocomplete="new-password"></div>
+    <div class="err" id="scopedUserErr"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="btnScopedUserCancel">取消</button>
+      <button class="btn primary" id="btnScopedUserOk">创建</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="modalScopedFolder">
+  <div class="modal">
+    <h3>选择允许访问的文件夹</h3>
+    <div class="sub" id="scopedFolderFor"></div>
+    <div class="field">
+      <label>目录路径</label>
+      <input type="text" id="scopedPath" placeholder="D:\">
+      <div class="hint">点击下方列表可逐层进入，或直接输入完整路径</div>
+      <div class="browser" id="scopedBrowser"></div>
+      <div class="hint" id="scopedBrowserPath"></div>
+    </div>
+    <div class="field">
+      <label>对方对这个文件夹的权限</label>
+      <div class="seg" id="scopedPermSeg">
+        <button type="button" class="seg-btn on" data-ro="0">可读写</button>
+        <button type="button" class="seg-btn" data-ro="1">只读</button>
+      </div>
+      <div class="hint">只读：只能看和下载，不能上传、新建、改名、删除、移动</div>
+    </div>
+    <div class="err" id="scopedFolderErr"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="btnScopedFolderCancel">取消</button>
+      <button class="btn primary" id="btnScopedFolderOk">加入白名单</button>
+    </div>
+  </div>
+</div>
+
 <div id="login">
   <form class="login-box" id="loginForm">
-    <h2>selfnas</h2>
+    <div class="brandmark">Self<b>NAS</b></div>
     <p class="sub">登录管理台</p>
     <div class="field"><label>账号</label><input type="text" id="loginUser" value="admin" autocomplete="username"></div>
     <div class="field"><label>密码</label><input type="password" id="loginPass" autocomplete="current-password"></div>

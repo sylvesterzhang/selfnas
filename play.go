@@ -189,7 +189,7 @@ func (s *stderrTail) String() string {
 // 前端因此会提示「暂不支持拖动」，而不是让用户拖半天没反应。
 func handleFSPlay(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	full, _, err := resolve(q.Get("root"), q.Get("path"))
+	full, _, err := resolveFor(webUserOf(r), q.Get("root"), q.Get("path"))
 	if err != nil {
 		log.Printf("[转封装] %s %s 拒绝：路径越界 path=%q", clientIP(r), uaTag(r.UserAgent()), q.Get("path"))
 		http.Error(w, "禁止访问", http.StatusForbidden)
@@ -341,7 +341,7 @@ func handleFSPlay(w http.ResponseWriter, r *http.Request) {
 // 前端据此决定：直链播放 / 换封装播放 / 只给下载。
 func handleFSPlayInfo(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	full, _, err := resolve(q.Get("root"), q.Get("path"))
+	full, _, err := resolveFor(webUserOf(r), q.Get("root"), q.Get("path"))
 	if err != nil {
 		writeJSON(w, 403, "无权访问该路径", nil)
 		return

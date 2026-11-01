@@ -60,7 +60,7 @@ func handleFSThumb(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	full, _, err := resolve(q.Get("root"), q.Get("path"))
+	full, _, err := resolveFor(webUserOf(r), q.Get("root"), q.Get("path"))
 	if err != nil {
 		http.Error(w, "禁止访问", http.StatusForbidden)
 		return

@@ -1,9 +1,9 @@
-//go:build !windows
+//go:build !windows && !linux && !darwin
 
 package main
 
-// 非 Windows 平台的自启动：暂不实现，管理台开关显示「此系统暂不支持」。
-// Linux 上正路是 systemd user unit（要处理发行版差异），等真有需求再做。
+// 剩下的平台（FreeBSD 等）暂不支持自启，管理台开关显示「此系统暂不支持」。
+// Windows / Linux / macOS 各有自己的实现（autostart.go / _linux.go / _darwin.go）。
 
 type autostartInfo struct {
 	Supported  bool   `json:"supported"`

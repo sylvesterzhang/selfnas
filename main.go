@@ -20,13 +20,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
 
-const version = "0.19.5"
+const version = "0.20.0"
 
 //go:embed web
 var webFS embed.FS
@@ -50,11 +51,18 @@ type Config struct {
 	AdminOnlyLocal    bool   `json:"adminOnlyLocal"`
 	UploadConcurrency int    `json:"uploadConcurrency"`
 	SessionDays       int    `json:"sessionDays"`
+	// 文件站皮肤："" = 跟随系统（默认），其余见 themeKeys
+	Theme string `json:"theme"`
 	// 可留空：留空时按「几个常见安装位置 + PATH」自动找。MKV 这类文件要靠它换封装才能播。
 	FFmpeg string `json:"ffmpeg"`
 	// 可留空：ffmpeg 引导安装的下载地址（zip，里面要有 ffmpeg.exe / ffprobe.exe）。
 	// 留空用内置默认（gyan.dev 官方构建）；国内慢可以填镜像。
 	FFmpegURL string `json:"ffmpegUrl"`
+	// 内置 SMB 服务：iPhone「文件」App 原生支持 SMB，但它只认 445、也不支持 WebDAV，
+	// 所以手机端传大文件（锁屏不断）靠这条。安卓/macOS/Windows 走 WebDAV 即可。
+	SMB SmbConfig `json:"smb"`
+	// 受限账号：只能看到白名单文件夹的 SMB/WebDAV 账号（admin 不在这里，见 User/PassHash）。
+	ScopedAccounts []ScopedAccount `json:"scopedAccounts,omitempty"`
 }
 
 // DriveInfo 系统盘符信息（仅用于展示与首次生成默认配置）
@@ -120,6 +128,16 @@ func main() {
 	}
 	defer closeDB()
 
+	// 内置 SMB（给 iPhone「文件」App 用）。起不来只记日志，不影响主服务：
+	// 最常见的失败是 445 被 Windows 自带的 SMB 占着，去管理台点「接管 445」即可。
+	if cfg.SMB.Enabled {
+		go func() {
+			if err := smbStart(); err != nil {
+				log.Printf("[smb] 启动失败：%v", err)
+			}
+		}()
+	}
+
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           routes(),
@@ -135,19 +153,12 @@ func main() {
 	// 先绑端口再报地址，横幅出现的那一刻 URL 就是可用的。
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		// 绑定失败（十有八九是端口被占）。注意不能用 log.Fatalf：
+		// 绑定失败。注意不能用 log.Fatalf：
 		// 双击启动时控制台窗口会随进程退出瞬间关闭，用户什么都看不见，只会觉得「程序坏了」。
-		fmt.Println("")
-		fmt.Println("================================================")
-		fmt.Println("  启动失败：端口 " + itoa(cfg.Port) + " 无法监听，多半被别的程序占用了")
-		fmt.Println("  处理：换一个端口（编辑 config.json 里的 port 后重新启动），")
-		fmt.Println("        或关掉占用该端口的程序。")
-		fmt.Println("  查占用：netstat -ano | findstr :" + itoa(cfg.Port))
-		fmt.Println("================================================")
-		fmt.Println("")
+		printListenFail(cfg.Port, err)
 		fmt.Print("按回车键退出…")
 		buf := make([]byte, 16)
-		// 服务场景（计划任务/S4U）没有可交互的 stdin，这里会立刻返回，进程照常退出；
+		// 服务场景（计划任务/S4U/Systemd）没有可交互的 stdin，这里会立刻返回，进程照常退出；
 		// 双击场景则停在这里，用户有时间看清原因。
 		os.Stdin.Read(buf)
 		os.Exit(1)
@@ -276,12 +287,20 @@ func bootstrapConfig() error {
 	cfg = Config{
 		Port:              8080,
 		Bind:              "0.0.0.0",
-		User:              "admin",
-		PassHash:          hashPassword(defaultPassword),
-		Secret:            randomHex(32),
-		AdminOnlyLocal:    true,
+	User:              "admin",
+	PassHash:          hashPassword(defaultPassword),
+	Secret:            randomHex(32),
+	// 管理台默认不限本机：部署到 Linux/NAS/ARM 这类无头机器时，管理台几乎都是从
+	// 别的电脑浏览器打开的 —— 若默认锁「仅本机」，装完就被挡在门外、连设置都进不去
+	// （2026-11-01 用户反馈）。家用局域网默认开放可接受；要收紧就在管理台关掉，
+	// 或 config.json 把 adminOnlyLocal 改 true。
+	AdminOnlyLocal:    false,
 		UploadConcurrency: 2,
 		SessionDays:       3650,
+		// SMB 默认关：WebDAV 对安卓/电脑都能用，只有 iOS 才需要 SMB，
+		// 而 SMB 要抢 Windows 自带的 445（会把系统文件共享顶掉），
+		// 这种事必须用户自己点一下、看过提示再决定
+		SMB: SmbConfig{Enabled: false, Port: smbDefaultPort},
 	}
 	for _, d := range listDrives() {
 		if !d.Ready {
@@ -315,6 +334,11 @@ func normalizeConfig() error {
 	}
 	if cfg.UploadConcurrency <= 0 {
 		cfg.UploadConcurrency = 2
+	}
+	// 皮肤白名单：手改 config.json 写错值、或旧配置里还是「跟随系统」的空值，
+	// 都迁到 light（跟随系统选项 2026-11-01 已取消，见 theme.go 注释）
+	if !themeAllowed(cfg.Theme) {
+		cfg.Theme = "light"
 	}
 	seen := map[string]bool{}
 	out := cfg.Roots[:0]
@@ -436,32 +460,47 @@ func signToken(user string, exp int64) string {
 }
 
 func verifyToken(tok string) bool {
+	_, ok := tokenUser(tok)
+	return ok
+}
+
+// tokenUser 解出令牌里的用户名（签名与有效期都在这里校验）。
+// 用户名可以是 admin，也可以是任一受限账号——受限账号要能登录文件站网页端。
+// 受限账号被删除后 scopedUserIsScoped 变 false，旧令牌立即失效。
+func tokenUser(tok string) (string, bool) {
 	i := strings.LastIndex(tok, ".")
 	if i <= 0 {
-		return false
+		return "", false
 	}
 	payloadB, err := base64.RawURLEncoding.DecodeString(tok[:i])
 	if err != nil {
-		return false
+		return "", false
 	}
 	sigB, err := base64.RawURLEncoding.DecodeString(tok[i+1:])
 	if err != nil {
-		return false
+		return "", false
 	}
 	mac := hmac.New(sha256.New, []byte(cfg.Secret))
 	mac.Write(payloadB)
 	if !hmac.Equal(mac.Sum(nil), sigB) {
-		return false
+		return "", false
 	}
 	parts := strings.Split(string(payloadB), "|")
-	if len(parts) != 2 || parts[0] != cfg.User {
-		return false
+	if len(parts) != 2 || parts[0] == "" {
+		return "", false
+	}
+	user := parts[0]
+	if user != cfg.User && !scopedUserIsScoped(user) {
+		return "", false
 	}
 	var exp int64
-	if _, err := fmt.Sscanf(parts[1], "%d", &exp); err != nil {
-		return false
+	if _, err := fmt.Sscanf(parts[1], "%d", &exp); err != nil || exp <= 0 {
+		return "", false
 	}
-	return time.Now().Unix() < exp
+	if time.Now().Unix() >= exp {
+		return "", false
+	}
+	return user, true
 }
 
 // tokenExp 取出令牌里的过期时间（签名已由 verifyToken 校验过）
@@ -498,8 +537,13 @@ func sessionTotalSec() int64 {
 	return n
 }
 
-// setSessionCookie 下发/刷新会话 Cookie，返回令牌的过期时间戳
+// setSessionCookie 下发/刷新会话 Cookie（admin），返回令牌的过期时间戳
 func setSessionCookie(w http.ResponseWriter) int64 {
+	return setSessionCookieAs(w, cfg.User)
+}
+
+// setSessionCookieAs 给指定用户下发会话 Cookie。受限账号登录文件站走这个。
+func setSessionCookieAs(w http.ResponseWriter, user string) int64 {
 	total := sessionTotalSec()
 	exp := time.Now().Unix() + total
 	maxAge := total
@@ -508,7 +552,7 @@ func setSessionCookie(w http.ResponseWriter) int64 {
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "sn_token",
-		Value:    signToken(cfg.User, exp),
+		Value:    signToken(user, exp),
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
@@ -519,20 +563,36 @@ func setSessionCookie(w http.ResponseWriter) int64 {
 
 // authedRenew 校验登录态，并在「剩余有效期不足一半」时自动续签。
 // 这样即使浏览器把 Cookie 截到 400 天，只要用户偶尔用一次就永远不会掉登录。
+// 续签保持原用户身份——受限账号续签后还是受限账号，绝不能被顶成 admin。
 func authedRenew(w http.ResponseWriter, r *http.Request) bool {
 	c, err := r.Cookie("sn_token")
 	if err != nil {
 		return false
 	}
-	if !verifyToken(c.Value) {
+	user, ok := tokenUser(c.Value)
+	if !ok {
 		return false
 	}
 	if exp, ok := tokenExp(c.Value); ok {
 		if exp-time.Now().Unix() < sessionTotalSec()/2 {
-			setSessionCookie(w)
+			setSessionCookieAs(w, user)
 		}
 	}
 	return true
+}
+
+// webUserOf 从会话 Cookie 解出当前请求的用户名（签名已校验）。
+// 没登录返回 ""。admin 返回 cfg.User，受限账号返回其用户名。
+func webUserOf(r *http.Request) string {
+	c, err := r.Cookie("sn_token")
+	if err != nil {
+		return ""
+	}
+	user, ok := tokenUser(c.Value)
+	if !ok {
+		return ""
+	}
+	return user
 }
 
 // ---------- 登录失败锁定 ----------
@@ -753,6 +813,13 @@ func routes() http.Handler {
 	mux.HandleFunc("/api/browse", guard(handleBrowse))
 	mux.HandleFunc("/api/settings", guard(handleSettings))
 	mux.HandleFunc("/api/autostart", guard(handleAutostart))
+	mux.HandleFunc("/api/smb", guard(handleSMB))
+	// 受限账号（SMB/WebDAV 白名单访问）：admin 登录态下管理
+	mux.HandleFunc("/api/scoped", guard(handleScopedAccounts))
+	mux.HandleFunc("/api/scoped/folder", guard(handleScopedFolder))
+	mux.HandleFunc("/api/scoped/perm", guard(handleScopedPerm))
+	mux.HandleFunc("/api/smb/takeover", guard(handleSMBTakeover))
+	mux.HandleFunc("/api/smb/restore", guard(handleSMBRestore))
 	mux.HandleFunc("/api/qr/token", guard(handleQRToken))
 	mux.HandleFunc("/api/logs/tail", guard(handleLogTail))
 	mux.HandleFunc("/api/logs/transfers", guard(handleTransferList))
@@ -771,8 +838,11 @@ func routes() http.Handler {
 	// 给外部播放器（VLC/Infuse/nPlayer）的短期签名直链 —— 它们自带解码器，MKV 直接播
 	mux.HandleFunc("/api/fs/link", guardAuth(handleFSLink))
 	mux.HandleFunc("/f", handleSignedFile)
+	// WebDAV：让 iOS「文件」/安卓文件管理器/资源管理器直接挂载（后台传输，锁屏不断）
+	mountWebDAV(mux)
 	mux.HandleFunc("/api/fs/upload", guardAuth(handleFSUpload))
 	mux.HandleFunc("/api/fs/upload/status", guardAuth(handleFSUploadStatus))
+	mux.HandleFunc("/api/fs/upload/abort", guardAuth(handleFSUploadAbort))
 	mux.HandleFunc("/api/fs/mkdir", guardAuth(handleFSMkdir))
 	mux.HandleFunc("/api/fs/rename", guardAuth(handleFSRename))
 	mux.HandleFunc("/api/fs/move", guardAuth(handleFSMove))
@@ -890,7 +960,9 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// guard 管理类接口的鉴权 + 来源限制
+// guard 管理类接口的鉴权 + 来源限制。
+// 管理接口是 admin 专属：受限账号的令牌在这里一律拒掉——
+// 它们的地盘是文件站（guardAuth 的那些接口 + 白名单过滤），管理台不开放。
 func guard(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ip := clientIP(r)
@@ -898,7 +970,7 @@ func guard(h http.HandlerFunc) http.HandlerFunc {
 			writeJSON(w, 403, "管理接口仅允许本机或 Tailscale 访问", nil)
 			return
 		}
-		if !authedRenew(w, r) {
+		if webUserOf(r) != cfg.User {
 			writeJSON(w, 401, "未登录", nil)
 			return
 		}
@@ -925,4 +997,44 @@ func writeJSON(w http.ResponseWriter, code int, msg string, data any) {
 		"msg":  msg,
 		"data": data,
 	})
+}
+
+// printListenFail 端口绑不上时的终端提示。
+//
+// 「查占用」那条命令必须分平台：原来写死 `netstat -ano | findstr :80`，
+// 在 Linux / macOS 上照抄只会得到 "command not found"，等于没给。
+// 另外 Linux/macOS 最常见的失败其实不是「被占」而是「没权限」
+// （1024 以下端口普通用户绑不了），这两种情况给的处置完全不同，
+// 混成一句「多半被别的程序占用」会让人白折腾半天。
+func printListenFail(port int, err error) {
+	fmt.Println("")
+	fmt.Println("================================================")
+	switch {
+	case errors.Is(err, syscall.EACCES), errors.Is(err, syscall.EPERM):
+		fmt.Println("  启动失败：没有权限监听 " + itoa(port) + " 端口（1024 以下是系统端口）")
+		switch runtime.GOOS {
+		case "linux":
+			fmt.Println("  处理：sudo ./selfnas")
+			fmt.Println("        或只给这一个程序授权：sudo setcap cap_net_bind_service=+ep ./selfnas")
+			fmt.Println("        （注意：重新编译/换新版本后 setcap 会失效，要再执行一次）")
+		case "darwin":
+			fmt.Println("  处理：sudo ./selfnas")
+		default:
+			fmt.Println("  处理：用管理员身份运行")
+		}
+	default:
+		fmt.Println("  启动失败：端口 " + itoa(port) + " 无法监听，多半被别的程序占用了")
+		fmt.Println("  处理：换一个端口（编辑 config.json 里的 port 后重新启动），")
+		fmt.Println("        或关掉占用该端口的程序。")
+		switch runtime.GOOS {
+		case "windows":
+			fmt.Println("  查占用：netstat -ano | findstr :" + itoa(port))
+		case "darwin":
+			fmt.Println("  查占用：sudo lsof -nP -iTCP:" + itoa(port) + " -sTCP:LISTEN")
+		default:
+			fmt.Println("  查占用：sudo ss -lptn 'sport = :" + itoa(port) + "'")
+		}
+	}
+	fmt.Println("================================================")
+	fmt.Println("")
 }

@@ -19,6 +19,11 @@ import (
 
 var errOutside = errors.New("路径越界")
 
+// 网页端上传保险丝（防绕过页面直接调 API 灌文件）。2026-10-31 从 50MB 硬拦放宽为 10GB：
+// 前端口径改为「大文件弹确认 + 自动申请亮屏锁」，不再硬拦，50MB 的闸会把新口径卡死。
+// 正常网页上传碰不到这个量级；真有大文件需求走 SMB/WebDAV（本来就没有这道闸）。
+const maxWebUpload = int64(10) << 30
+
 func findRoot(rootPath string) (Root, bool) {
 	for _, r := range cfg.Roots {
 		if strings.EqualFold(normPath(r.Path), normPath(rootPath)) {
@@ -30,10 +35,40 @@ func findRoot(rootPath string) (Root, bool) {
 
 // resolve 把「根 + 相对路径」解析成绝对路径，并确保不越出根目录
 func resolve(rootPath, rel string) (string, Root, error) {
-	rt, ok := findRoot(rootPath)
-	if !ok {
+	return resolveFor("", rootPath, rel)
+}
+
+// resolveFor 带用户身份的路径解析：
+//   - user 为空或 admin：行为同 resolve，根 = 配置里启用的根；
+//   - 受限账号：rootPath 必须是该用户白名单里的真实路径（展示名→路径由
+//     handleFSRoots 下发，前端原样传回），相对路径拼上去后再用 Rel 防越界。
+//     白名单外的任何 root 一律 errOutside——这是网页端的权限边界。
+func resolveFor(user, rootPath, rel string) (string, Root, error) {
+	if user == "" || user == cfg.User {
+		rt, ok := findRoot(rootPath)
+		if !ok {
+			return "", Root{}, errOutside
+		}
+		return resolveWithin(rt, rel)
+	}
+	folders, scoped := scopedFoldersFor(user)
+	if !scoped {
 		return "", Root{}, errOutside
 	}
+	for real, disp := range scopedNameFor(folders) {
+		if !strings.EqualFold(filepath.Clean(real), filepath.Clean(rootPath)) {
+			continue
+		}
+		// 只读标记随白名单条目走：这一个文件夹只读，不牵连同账号的其它文件夹。
+		// 各写操作（上传/新建/改名/删除/移动）都看 rt.Readonly，这里给对就全拦住了。
+		rt := Root{Name: disp, Path: real, Enabled: true, Readonly: scopedReadonlyFor(folders, real)}
+		return resolveWithin(rt, rel)
+	}
+	return "", Root{}, errOutside
+}
+
+// resolveWithin 在指定根内解析 rel 并防越界（resolve 与 resolveFor 的公共主体）。
+func resolveWithin(rt Root, rel string) (string, Root, error) {
 	base, err := filepath.Abs(rt.Path)
 	if err != nil {
 		return "", rt, err
@@ -88,6 +123,9 @@ func fileKind(name string, isDir bool) string {
 		return "image"
 	case ".mp3", ".m4a", ".wav", ".flac", ".aac", ".ogg":
 		return "audio"
+	case ".pdf":
+		// 浏览器自带 PDF 查看器，列表图标和点击分发都按这个 kind 走
+		return "pdf"
 	case ".zip", ".7z", ".rar", ".tar", ".gz":
 		return "archive"
 	}
@@ -106,6 +144,27 @@ func handleFSRoots(w http.ResponseWriter, r *http.Request) {
 		TotalGB  string `json:"totalGB"`
 	}
 	var out []item
+	// 受限账号：白名单文件夹就是它的全部世界——每个文件夹当一个「根」下发，
+	// 前端逻辑完全复用（root 参数原样传回，resolveFor 只认这些路径）。
+	// 可写（与 SMB/WebDAV 受限账号同一口径），不能传只读否则前端会锁上传。
+	if user := webUserOf(r); scopedUserIsScoped(user) {
+		folders, _ := scopedFoldersFor(user)
+		for real, disp := range scopedNameFor(folders) {
+			st, err := os.Stat(real)
+			if err != nil || !st.IsDir() {
+				continue // 文件夹没了就不列，别让整页挂掉
+			}
+			it := item{Name: disp, Path: real, Drive: driveOf(real), Readonly: scopedReadonlyFor(folders, real)}
+			if total, free := volumeSpace(real); total > 0 {
+				it.TotalGB = humanGB(total)
+				it.FreeGB = humanGB(free)
+			}
+			out = append(out, it)
+		}
+		// user 给前端用：受限账号要藏「管理台」入口（进去了也只有 401）
+		writeJSON(w, 0, "ok", map[string]any{"roots": out, "user": user, "theme": cfg.Theme})
+		return
+	}
 	for _, rt := range cfg.Roots {
 		if !rt.Enabled {
 			continue
@@ -120,13 +179,15 @@ func handleFSRoots(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, it)
 	}
-	writeJSON(w, 0, "ok", out)
+	// user 给前端用：受限账号要藏「管理台」入口（进去了也只有 401）
+	// theme 给前端用：皮肤在管理台全局配置，files 页挂到 <html data-theme>
+	writeJSON(w, 0, "ok", map[string]any{"roots": out, "user": webUserOf(r), "theme": cfg.Theme})
 }
 
 func handleFSList(w http.ResponseWriter, r *http.Request) {
 	root := r.URL.Query().Get("root")
 	rel := r.URL.Query().Get("path")
-	full, rt, err := resolve(root, rel)
+	full, rt, err := resolveFor(webUserOf(r), root, rel)
 	if err != nil {
 		writeJSON(w, 403, "无权访问该路径", nil)
 		return
@@ -203,7 +264,7 @@ func mustAbs(p string) string {
 
 func handleFSDownload(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	full, rt, err := resolve(q.Get("root"), q.Get("path"))
+	full, rt, err := resolveFor(webUserOf(r), q.Get("root"), q.Get("path"))
 	if err != nil {
 		log.Printf("[下载] %s %s 拒绝：路径越界 path=%q", clientIP(r), uaTag(r.UserAgent()), q.Get("path"))
 		http.Error(w, "禁止访问", http.StatusForbidden)
@@ -240,7 +301,7 @@ func handleFSUpload(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	ua := uaTag(r.UserAgent())
 	q := r.URL.Query()
-	dirFull, rt, err := resolve(q.Get("root"), q.Get("dir"))
+	dirFull, rt, err := resolveFor(webUserOf(r), q.Get("root"), q.Get("dir"))
 	if err != nil {
 		log.Printf("[上传] %s %s 拒绝：路径越界 root=%q dir=%q", ip, ua, q.Get("root"), q.Get("dir"))
 		writeJSON(w, 403, "无权访问该路径", nil)
@@ -271,6 +332,13 @@ func handleFSUpload(w http.ResponseWriter, r *http.Request) {
 
 	if size <= 0 {
 		writeJSON(w, 400, "缺少文件大小", nil)
+		return
+	}
+	// 网页端上传保险丝（10GB，见 maxWebUpload 注释）：正常使用碰不到，纯防滥用。
+	if size > maxWebUpload {
+		log.Printf("[上传] %s %s 拒绝：文件 %q 大小 %.2fGB 超过保险丝 %dGB",
+			ip, ua, name, float64(size)/(1<<30), maxWebUpload>>30)
+		writeJSON(w, 413, "文件超过网页端上传上限（10 GB），这样的大文件请用 SMB / WebDAV 传", nil)
 		return
 	}
 	if offset < 0 || offset >= size {
@@ -481,7 +549,7 @@ func missingRanges(m uploadMeta) [][2]int64 {
 
 func handleFSUploadStatus(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	dirFull, _, err := resolve(q.Get("root"), q.Get("dir"))
+	dirFull, _, err := resolveFor(webUserOf(r), q.Get("root"), q.Get("dir"))
 	if err != nil {
 		writeJSON(w, 403, "无权访问该路径", nil)
 		return
@@ -542,6 +610,56 @@ func handleFSUploadStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 0, "ok", data)
 }
 
+// 放弃一次分片上传：删掉 name.part / name.part.meta（成品文件不动）。
+// 前端点「停止上传」后调用。前端 abort 信号到达前可能还有一两个在途分片
+// 正握着 part 的写句柄，Windows 上文件被打开时删不掉 —— 带个小重试等句柄释放。
+// 幂等：part 本来就不存在（比如从未开始过）也返回成功。
+func handleFSUploadAbort(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeJSON(w, 405, "只支持 DELETE", nil)
+		return
+	}
+	q := r.URL.Query()
+	dirFull, rt, err := resolveFor(webUserOf(r), q.Get("root"), q.Get("dir"))
+	if err != nil {
+		writeJSON(w, 403, "无权访问该路径", nil)
+		return
+	}
+	if rt.Readonly {
+		writeJSON(w, 403, "该目录为只读", nil)
+		return
+	}
+	name := q.Get("name")
+	if !safeName(name) {
+		writeJSON(w, 400, "文件名非法", nil)
+		return
+	}
+	part := filepath.Join(dirFull, name) + ".part"
+	meta := part + ".meta"
+
+	var lastErr error
+	for i := 0; i < 6; i++ {
+		e1 := os.Remove(part)
+		e2 := os.Remove(meta)
+		if os.IsNotExist(e1) && os.IsNotExist(e2) {
+			lastErr = nil
+			break
+		}
+		lastErr = e1
+		if lastErr == nil {
+			lastErr = e2
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if lastErr != nil {
+		log.Printf("[上传] %s %s 放弃失败 name=%s: %v", clientIP(r), uaTag(r.UserAgent()), name, lastErr)
+		writeJSON(w, 500, "清理分片缓存失败: "+lastErr.Error(), nil)
+		return
+	}
+	log.Printf("[上传] %s %s 放弃上传 name=%s 分片缓存已清", clientIP(r), uaTag(r.UserAgent()), name)
+	writeJSON(w, 0, "ok", nil)
+}
+
 func handleFSMkdir(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Root string `json:"root"`
@@ -552,7 +670,7 @@ func handleFSMkdir(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, "请求格式错误", nil)
 		return
 	}
-	dirFull, rt, err := resolve(body.Root, body.Dir)
+	dirFull, rt, err := resolveFor(webUserOf(r), body.Root, body.Dir)
 	if err != nil {
 		writeJSON(w, 403, "无权访问该路径", nil)
 		return
@@ -587,7 +705,7 @@ func handleFSRename(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, "请求格式错误", nil)
 		return
 	}
-	full, rt, err := resolve(body.Root, body.Path)
+	full, rt, err := resolveFor(webUserOf(r), body.Root, body.Path)
 	if err != nil {
 		writeJSON(w, 403, "无权访问该路径", nil)
 		return
@@ -629,7 +747,7 @@ func handleFSDelete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, "不允许删除根目录", nil)
 		return
 	}
-	full, rt, err := resolve(body.Root, body.Path)
+	full, rt, err := resolveFor(webUserOf(r), body.Root, body.Path)
 	if err != nil {
 		writeJSON(w, 403, "无权访问该路径", nil)
 		return
@@ -686,7 +804,7 @@ func handleFSMove(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, "请求格式错误", nil)
 		return
 	}
-	src, rt, err := resolve(body.Root, body.Path)
+	src, rt, err := resolveFor(webUserOf(r), body.Root, body.Path)
 	if err != nil {
 		writeJSON(w, 403, "无权访问该路径", nil)
 		return
@@ -704,7 +822,7 @@ func handleFSMove(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, "源文件不存在", nil)
 		return
 	}
-	dstDir, _, err := resolve(body.Root, body.DestDir)
+	dstDir, _, err := resolveFor(webUserOf(r), body.Root, body.DestDir)
 	if err != nil {
 		writeJSON(w, 403, "无权访问目标路径", nil)
 		return

@@ -42,7 +42,12 @@ async function api(url, body, method) {
   return json;
 }
 
-function showLogin() { $('login').classList.add('on'); }
+function showLogin() {
+  $('login').classList.add('on');
+  // 登录遮罩压在 FAB 之上，菜单若还开着，重新登进来会看到一串残留在半空的按钮
+  const fab = $('fsFab');
+  if (fab) fab.classList.remove('on');
+}
 
 $('loginForm').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -61,10 +66,24 @@ function q(root, path) {
 
 // ---------- 数据 ----------
 
+// 皮肤应用：管理台全局配置，恒为六套之一（旧版「跟随系统」已取消，空值兜底亮色）。
+// 只在登录态加载时应用一次；切皮肤要去管理台改，改完刷新 files 页生效。
+function applyTheme(t) {
+  if (t !== 'light' && t !== 'blue' && t !== 'pink' && t !== 'ebook' && t !== 'green' && t !== 'dark') {
+    t = 'light';
+  }
+  document.documentElement.setAttribute('data-theme', t);
+}
+
 async function loadRoots() {
   const r = await api('/api/fs/roots');
   if (r.code !== 0) return;
-  S.roots = r.data || [];
+  S.roots = (r.data && r.data.roots) || r.data || [];
+  S.user = (r.data && r.data.user) || '';
+  applyTheme((r.data && r.data.theme) || 'light');
+  // 受限账号没有管理台权限，齿轮藏掉（点进去也只有 401）
+  const adminLink = $('btnAdminLink');
+  if (adminLink && S.user && S.user !== 'admin') adminLink.style.display = 'none';
   if (!S.roots.length) {
     $('list').innerHTML = '<div class="empty">还没有启用的根目录，请到管理台「根目录」里添加。</div>';
     return;
@@ -88,7 +107,11 @@ function renderRoots() {
   S.roots.forEach((r) => {
     const b = document.createElement('button');
     b.className = 'chip' + (r.path === S.root ? ' on' : '');
-    b.textContent = rootTag(r.name, r.drive);
+    b.title = rootTag(r.name, r.drive) + (r.readonly ? '（只读）' : '');
+    b.innerHTML = esc(rootTag(r.name, r.drive)) +
+      // 只读根在盘符后面挂个角标：根目录没有面包屑行，「只读 · N 项」看不到，
+      // 不这样标一下用户要点了上传才知道不能写
+      (r.readonly ? '<span class="chip-ro">只读</span>' : '');
     b.addEventListener('click', () => {
       S.root = r.path;
       S.rootName = r.name;
@@ -117,13 +140,11 @@ async function loadList() {
 function renderCrumb(parent) {
   const box = $('crumb');
   box.innerHTML = '';
-  // 恒显示：根目录时只剩根名一项也不藏——藏了整页上下跳，跟「上一级」恒占位同一个道理
   const parts = S.path ? S.path.split('/') : [];
   const home = document.createElement('span');
   home.className = 'crumb-item' + (parts.length ? ' link' : '');
-  // 根目录时这一项跟上面的标题完全一样（「资料 D:」），并排看着像渲染重复；
-  // 这时改写成磁盘路径 D:\，既不一样，又把"这到底是哪个盘"补了回来
-  home.textContent = parts.length ? rootTag(S.rootName, S.rootDrive) : (S.rootDrive + '\\');
+  // 盘符这一项恒写「资料 D:」：根目录时这整行是隐藏的，不用再为"跟标题重复"做特殊处理
+  home.textContent = rootTag(S.rootName, S.rootDrive);
   if (parts.length) home.addEventListener('click', () => { S.path = ''; loadList(); });
   box.appendChild(home);
   let acc = [];
@@ -133,20 +154,21 @@ function renderCrumb(parent) {
     sep.className = 'crumb-sep';
     sep.textContent = '/';
     box.appendChild(sep);
+    const last = i === parts.length - 1;
     const it = document.createElement('span');
-    it.className = 'crumb-item' + (i === parts.length - 1 ? '' : ' link');
+    // 当前这一层用「正文色」加重：一节节都是灰的，看不出哪个是"我现在在这儿"
+    it.className = 'crumb-item' + (last ? ' on' : ' link');
     it.textContent = p;
-    if (i < parts.length - 1) {
+    if (!last) {
       const target = acc.slice().join('/');
       it.addEventListener('click', () => { S.path = target; loadList(); });
     }
     box.appendChild(it);
   });
-  $('dirTitle').textContent = parts.length ? parts[parts.length - 1] : rootTag(S.rootName, S.rootDrive);
-  // 副标题只说「只读 + 多少项」：完整路径在面包屑里已经有了，两处都写一遍等于同一句话占两行，
-  // 还把首屏往上顶。盘符也由面包屑第一项（「文档 F:」）交代
-  $('dirSub').textContent =
-    (S.readonly ? '只读 · ' : '') + S.entries.length + ' 项';
+  // 根目录不显示这一行：面包屑只剩「资料 D:」，而盘符条已经选中了那个盘，说了等于没说的东西不占高度
+  $('fsNav').hidden = !S.path;
+  // 项数：只做个旁注，跟在面包屑右端（只读账号额外标出来）
+  $('dirCount').textContent = (S.readonly ? '只读 · ' : '') + S.entries.length + ' 项';
 
   if (S.path) mountCrumbStar();
   else $('crumbStar').hidden = true;   // 根目录没有「收藏这个文件夹」可点（收藏的是子文件夹）
@@ -175,8 +197,8 @@ function mountCrumbStar() {
 }
 
 function iconFor(kind) {
-  const c = { dir: '#378ADD', video: '#1D9E75', image: '#BA7517', audio: '#7F77DD', archive: '#888780', file: '#888780' }[kind] || '#888780';
-  const g = { dir: 'M3 7h6l2 2h10v10H3z', video: 'M4 5h16v14H4z M10 9l6 3-6 3z', image: 'M4 5h16v14H4z M8 11l3 3 2-2 4 4H7z', audio: 'M9 18V7l8-2v11', archive: 'M4 6h16v4H4z M6 10h12v8H6z', file: 'M6 3h8l4 4v14H6z' }[kind] || 'M6 3h8l4 4v14H6z';
+  const c = { dir: '#378ADD', video: '#1D9E75', image: '#BA7517', audio: '#7F77DD', pdf: '#C0392B', archive: '#888780', file: '#888780' }[kind] || '#888780';
+  const g = { dir: 'M3 7h6l2 2h10v10H3z', video: 'M4 5h16v14H4z M10 9l6 3-6 3z', image: 'M4 5h16v14H4z M8 11l3 3 2-2 4 4H7z', audio: 'M9 18V7l8-2v11', pdf: 'M6 3h8l4 4v14H6z M9 12h6 M9 16h6', archive: 'M4 6h16v4H4z M6 10h12v8H6z', file: 'M6 3h8l4 4v14H6z' }[kind] || 'M6 3h8l4 4v14H6z';
   return '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="' + c + '" stroke-width="1.6" stroke-linejoin="round"><path d="' + g + '"/></svg>';
 }
 
@@ -193,6 +215,13 @@ function sizeText(n) {
   if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
   return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
 }
+
+// 网页端大文件提示线（不是硬上限）。口径（2026-10-30 定）：按 5MB/s、10 秒传完 ≈ 50MB。
+// 2026-10-31 改口径：不再硬拦 50MB —— 上传期间会申请屏幕唤醒锁（不支持 Wake Lock 的
+// 浏览器退化为静音音频保活），选超 50MB 时弹确认框说明风险并推荐 SMB/WebDAV，用户坚持就传。
+// 后端 fsops.go 的 maxWebUpload 是防滥用的保险丝（10GB），与这里无关。
+const WEB_HINT_SIZE = 50 * 1024 * 1024;
+const WEB_HINT_TEXT = (n) => n + ' 个文件超过 ' + Math.round(WEB_HINT_SIZE / 1024 / 1024) + ' MB：网页上传请保持亮屏（已自动申请亮屏锁），熄屏/切后台可能导致中断。大文件更推荐 SMB / WebDAV（系统接管，锁屏也能传）。仍要用网页上传吗？';
 
 function dateText(ts) {
   const d = new Date(ts * 1000);
@@ -392,7 +421,7 @@ async function gotoStored(it) {
   if (!ent) { toast('这个文件已经不在这了'); return; }
 
   locateRow(it.name);
-  if (ent.kind === 'video' || ent.kind === 'image' || ent.kind === 'audio') {
+  if (ent.kind === 'video' || ent.kind === 'image' || ent.kind === 'audio' || ent.kind === 'pdf') {
     // 留 260ms 让高亮先画出来：播放器关掉时，人还得能看见自己落在哪一行
     setTimeout(() => openViewer(ent), 260);
     return;
@@ -455,16 +484,15 @@ function saveSort() {
   try { localStorage.setItem(SORT_KEY, JSON.stringify(S.sort)); } catch (e) {}
 }
 
+// 排序状态只有一个按钮，当前状态直接写在按钮文字里（手机端只显示图标，靠 title + toast 交代）
+function sortLabel() {
+  return (S.sort.by === 'name' ? '名称' : '时间') + (S.sort.dir[S.sort.by] === 'asc' ? ' ↑' : ' ↓');
+}
 function renderSort() {
-  const bar = $('sortBar');
-  if (!bar) return;
-  bar.querySelectorAll('[data-sort]').forEach((b) => {
-    const k = b.dataset.sort;
-    const on = k === S.sort.by;
-    b.className = 'chip' + (on ? ' on' : '');
-    // 箭头只画在选中的那个上：两个 chip 各带一个箭头会让人以为能分别控制
-    b.textContent = (k === 'name' ? '名称' : '时间') + (on ? (S.sort.dir[k] === 'asc' ? ' ↑' : ' ↓') : '');
-  });
+  const txt = $('sortTxt');
+  if (txt) txt.textContent = sortLabel();
+  const btn = $('btnSort');
+  if (btn) btn.title = '排序：' + sortLabel();
 }
 
 // 文件夹恒在前：混排时刚建的空文件夹没有大小、没有时间感，混在文件里根本找不到
@@ -496,7 +524,17 @@ function renderList() {
   }
   box.appendChild(up);
   if (!S.entries.length) {
-    box.innerHTML += '<div class="empty">这个文件夹是空的</div>';
+    // 注意：必须用 appendChild，不能用 box.innerHTML += —— 后者会把整个列表重新
+    // 序列化再解析，把上面 up 行直接绑在 DOM 上的 click 监听一起冲掉
+    // （空文件夹时上一级点了没反应就是这个原因）。
+    const empty = document.createElement('div');
+    empty.className = 'empty empty-dir';
+    // 空文件夹是唯一「没有内容可挡」的地方 —— 字标放这儿不抢戏，也让空态看起来是设计过的，
+    // 不是没加载出来。顶栏和整屏水印都不做（理由见 style.css 里那段注释）。
+    empty.innerHTML =
+      '<div class="brandmark">Self<b>NAS</b></div>' +
+      '<div class="hint">这个文件夹是空的<br>把文件拷进这个目录，或者点上传按钮</div>';
+    box.appendChild(empty);
     return;
   }
   sortEntries(S.entries).forEach((e) => {
@@ -555,6 +593,12 @@ function renderList() {
     });
     box.appendChild(row);
   });
+
+  // 列表末尾的落款：滚到底才看得到，不占任何固定高度，也不跟文件名抢注意力
+  const sign = document.createElement('div');
+  sign.className = 'fs-sign';
+  sign.innerHTML = '<span class="brandmark">Self<b>NAS</b></span><span>数据都在你自己机器上</span>';
+  box.appendChild(sign);
 }
 
 function openEntry(e) {
@@ -564,7 +608,7 @@ function openEntry(e) {
     return;
   }
   // 下载类的点击也标一下（看/听/文本在各自预览里标，这里补其余类型）
-  if (e.kind === 'video' || e.kind === 'image' || e.kind === 'audio') {
+  if (e.kind === 'video' || e.kind === 'image' || e.kind === 'audio' || e.kind === 'pdf') {
     openViewer(e);
     return;
   }
@@ -661,6 +705,13 @@ function openViewer(e) {
     body.innerHTML = '<img src="' + dl + '&inline=1" alt="">';
   } else if (e.kind === 'audio') {
     body.innerHTML = '<audio src="' + dl + '&inline=1" controls autoplay></audio>';
+  } else if (e.kind === 'pdf') {
+    // 桌面浏览器自带 PDF 查看器，iframe 内嵌就能翻页缩放；
+    // iOS Safari 的 iframe 只显示第一页还滚不动，所以手机上要靠「新页面打开」
+    // 让系统原生查看器接管（可滚动、可双指缩放）。
+    body.innerHTML = '<iframe class="pdfview" src="' + dl + '&inline=1"></iframe>';
+    foot.innerHTML = '<button class="btn" id="pdfTab">在新页面打开（手机端推荐）</button>';
+    $('pdfTab').addEventListener('click', () => window.open(dl + '&inline=1', '_blank'));
   } else if (e.kind === 'video') {
     if (REMUX_VIDEO.test(e.name) || !NATIVE_VIDEO.test(e.name)) {
       playRemux(e, dl);
@@ -681,7 +732,7 @@ function openViewer(e) {
 // 看眼日志、翻翻配置，不用下载。只读不改：在外面改文件既容易误触保存覆盖原文件，
 // 也没有在电脑上改顺手，需要改就下载或回到电脑上。
 const TEXT_EXT = /\.(txt|md|markdown|log|json|yaml|yml|ini|conf|cfg|toml|env|properties|bat|cmd|sh|ps1|py|go|js|ts|css|html|htm|xml|csv|sql|gitignore|java|c|cpp|h|hpp|rs|php|rb|vue|jsx|tsx)$/i;
-const TEXT_MAX = 2 * 1024 * 1024;   // 超过 2MB 不读进内存，网页拖着累
+const TEXT_MAX = 5 * 1024 * 1024;   // 超过 5MB 不读进内存（手机上渲染大 DOM 会卡）；中篇 txt 小说够用
 
 function isTextFile(name) {
   return TEXT_EXT.test(name) || !/\.[a-z0-9]{1,8}$/i.test(name);   // 无扩展名（README、Makefile）也试一把，二进制检测会拦住
@@ -874,7 +925,7 @@ async function openTextViewer(e, dl) {
     if (!res.ok) throw new Error('读取失败（' + res.status + '）');
     const blob = await res.blob();
     if (blob.size > TEXT_MAX) {
-      body.innerHTML = '<div class="viewer-msg">文件超过 2 MB，不做在线预览<br>点下面的「下载到本机」看</div>';
+      body.innerHTML = '<div class="viewer-msg">文件超过 5 MB，不做在线预览<br>点下面的「下载到本机」看</div>';
       return;
     }
     const buf = new Uint8Array(await blob.arrayBuffer());
@@ -1633,11 +1684,49 @@ function beginPick(inputId, tag) {
   return true;
 }
 
-// 上传入口同样有两份（手机底部栏 / 桌面顶栏），共用同一个 filePicker
+// 用户在系统选择器里点了「取消」：iOS 上取消不触发 change，页面收不到任何信号，
+// 按钮就卡在「读取中」直到 2 分钟超时——取消是用户明确的意图，必须立即收场。
+function cancelPick(reason) {
+  if (!picking) return;
+  picking = false;
+  if (pickTimer) { clearTimeout(pickTimer); pickTimer = null; }
+  paintPickButton();
+  clog('上传等待已收场[' + reason + ']');
+}
+
+// 上传入口同样有两份（手机悬浮按钮 / 桌面顶栏），共用同一个 filePicker
 document.querySelectorAll('[data-upload]').forEach((b) => {
   b.addEventListener('click', (e) => {
     if (!beginPick('filePicker', '照片/系统选择器')) e.preventDefault();
   });
+});
+
+// ---------- 悬浮操作按钮（手机端） ----------
+// 底部两个大按钮收成一个「+」：点开展开上传/新建，点页面其他地方收起。
+// 桌面端整个 FAB 都不渲染（CSS 隐藏），操作在顶栏。
+const fabRoot = $('fsFab');
+$('fabBtn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  fabRoot.classList.toggle('on');
+});
+// 点 FAB 以外的任何地方都收起（列表滚动、点文件、点顶栏都算）
+document.addEventListener('click', (e) => {
+  if (fabRoot.classList.contains('on') && !fabRoot.contains(e.target)) {
+    fabRoot.classList.remove('on');
+  }
+});
+// 展开菜单里的动作点完就收：选择器/弹窗弹出来后，背后不该留着一串按钮
+document.querySelectorAll('.fab-menu [data-upload], .fab-menu [data-mkdir]').forEach((b) => {
+  b.addEventListener('click', () => fabRoot.classList.remove('on'));
+});
+
+// ---------- 切换账号 / 退出 ----------
+// 多账号之后退出是常规操作：换个账号登进来，看到的世界就跟着换。
+$('btnLogoutFs').addEventListener('click', async () => {
+  if (!confirm('退出当前账号？')) return;
+  try { await api('/api/logout', {}, 'POST'); } catch (e) { /* 网络失败也照样回登录页 */ }
+  showLogin();
+  toast('已退出，可换一个账号登录');
 });
 
 // 桌面端拖拽上传：把文件从资源管理器拖进页面，松手就传，复用同一套分片队列。
@@ -1697,8 +1786,17 @@ function handleFiles(files, via) {
     toast('文件还是空的（可能仍在从 iCloud 下载），请稍后重试');
     return;
   }
+  // 大文件提示（2026-10-31 改口径）：不再跳过/拒绝，弹确认框说明亮屏要求，坚持就传。
+  // confirm 只弹一次：整批里有大文件就问一遍，逐个问会把人烦死。
+  const big = files.filter((f) => f.size > WEB_HINT_SIZE);
+  if (big.length && !confirm(WEB_HINT_TEXT(big.length))) {
+    toast('已取消上传。大文件建议用 SMB / WebDAV（系统接管，锁屏也能传完）');
+    return;
+  }
+  toast(big.length
+    ? '已选择 ' + files.length + ' 个文件开始上传；其中 ' + big.length + ' 个超过 50 MB，请保持亮屏（大文件更推荐 SMB / WebDAV）'
+    : '已选择 ' + files.length + ' 个文件，开始上传');
   files.forEach((f) => S.queue.push({ id: ++TASK_SEQ, file: f, done: false, size: f.size, err: '', doneBytes: 0, partial: {}, conc: 2 }));
-  toast('已选择 ' + files.length + ' 个文件，开始上传');
   renderUpload();
   kick();
 }
@@ -1755,6 +1853,20 @@ function onPicked(e, tag) {
 
 $('filePicker').addEventListener('change', (e) => onPicked(e, 'change'));
 
+// 取消收场之一：现代浏览器（iOS 16.4+ / Chrome 113+）在用户取消文件选择时会派发 cancel 事件，
+// 监听到就立刻把「读取中」收掉。
+$('filePicker').addEventListener('cancel', () => cancelPick('系统选择器取消'));
+
+// 取消收场之二（兜底）：老 iOS 没有 cancel 事件，取消后页面重新可见但没有 change。
+// 正常导出完成的路径里 change 发生在页面可见**之前**（选择器盖着页面导出，导完才回来），
+// 所以「已经回到页面 1.5s 还没等到 change」基本就是取消——收掉。
+// 代价可控：万一撞上「导出中页面短暂可见」的怪场景，也只是按钮文字提前恢复，
+// change 来了照常入队上传，字节一个不少。
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible' || !picking) return;
+  setTimeout(() => { if (picking) cancelPick('回前台 1.5s 无 change（判定为取消）'); }, 1500);
+});
+
 // 兜底：iOS 上 change 偶发不触发（尤其从「照片」里选大视频、选择器被系统回收时）。
 // 页面重新可见 / 窗口重新获得焦点后主动去 input.files 里捡一次，避免白选。
 function harvest() {
@@ -1794,15 +1906,50 @@ window.addEventListener('focus', () => setTimeout(harvest, 350));
 window.addEventListener('pageshow', (e) => { if (e.persisted) setTimeout(harvest, 350); });
 
 let wakeLock = null;
-async function acquireWake() {
+let keepOsc = null, keepCtx = null;   // Wake Lock 不可用时的音频保活退化方案
+
+// 亮屏锁。**绝不阻塞上传主流程**：pump() 里是裸调用、不带 await。
+// 2026-11-01 真机教训：旧实现让 pump await 本函数，iPhone Chrome 走 http（非安全
+// 上下文）没有 Wake Lock → 落进音频保活 → AudioContext.resume() 在丢失手势链路的
+// 异步调用里可能永远不落定 → pump 卡死在 await 上，队列永远 0B。
+// 所以这里全部改成 fire-and-forget，任何 Promise 都只挂 .catch，不让调用方等。
+function acquireWake() {
   try {
-    if ('wakeLock' in navigator && !wakeLock) {
-      wakeLock = await navigator.wakeLock.request('screen');
-      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    // 注意别只判 'wakeLock' in navigator：有的环境属性在但值是 undefined
+    //（2026-11-01 探针实测，这种形态下 .request 直接同步抛 TypeError 会炸穿 pump）
+    if ('wakeLock' in navigator && navigator.wakeLock && typeof navigator.wakeLock.request === 'function') {
+      if (wakeLock) return;
+      navigator.wakeLock.request('screen').then((lock) => {
+        wakeLock = lock;
+        lock.addEventListener('release', () => { if (wakeLock === lock) wakeLock = null; });
+      }).catch(() => { startAudioKeepAlive(); });   // 有 API 但不给用（如非安全上下文的变体）→ 也退化
+      return;
     }
   } catch (e) {}
+  startAudioKeepAlive();
 }
-function releaseWake() { try { if (wakeLock) wakeLock.release(); } catch (e) {} wakeLock = null; }
+
+function startAudioKeepAlive() {
+  if (keepOsc) return;
+  try {
+    keepCtx = keepCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const osc = keepCtx.createOscillator();
+    const gain = keepCtx.createGain();
+    gain.gain.value = 0.0001;
+    osc.connect(gain);
+    gain.connect(keepCtx.destination);
+    osc.start();   // suspended 状态下 start 也合法，resume 成功后自然「在播」（音量人耳不可闻）
+    keepOsc = osc;
+    if (keepCtx.state === 'suspended') keepCtx.resume().catch(() => {});
+  } catch (e) {}
+}
+
+function releaseWake() {
+  try { if (wakeLock) wakeLock.release(); } catch (e) {}
+  wakeLock = null;
+  try { if (keepOsc) { keepOsc.stop(); keepOsc.disconnect(); } } catch (e) {}
+  keepOsc = null;
+}
 
 let pumpQueued = false;
 
@@ -1817,15 +1964,16 @@ async function pump() {
   if (S.busy) { pumpQueued = true; return; }
   S.busy = true;
   pumpQueued = false;
-  await acquireWake();
+  acquireWake();   // 裸调用：亮屏锁绝不能阻塞上传（2026-11-01 真机教训，见函数注释）
   renderUpload();
-  while (S.queue.some((t) => !t.done && !t.err)) {
+  while (!abortAll && S.queue.some((t) => !t.done && !t.err)) {
     const task = S.queue.find((t) => !t.done && !t.err);
     // 单个文件出异常（比如 File 句柄失效导致 slice 抛错）不能让 pump 直接 reject：
     // 那样 S.busy 永远是 true，界面永远停在「上传中」，连重试按钮都不出来。
     try {
       await uploadOne(task);
     } catch (err) {
+      if (abortAll) break;   // 中止引发的异常（XHR 被掐等）不用记成任务失败
       task.err = '出错了：' + (err && err.message ? err.message : err);
       clog('上传异常 ' + task.file.name + ' : ' + task.err);
     }
@@ -1833,7 +1981,15 @@ async function pump() {
   }
   releaseWake();
   S.busy = false;
-  if (S.queue.every((t) => t.done)) {
+  if (abortAll) {
+    // 用户主动停止：收尾（清队列、清服务端分片）由 stopAllUploads() 接管，
+    // 这里什么都不说、不标失败 —— 标了 err 会闪出「重试」按钮。
+    // abortAll 只在这里复位（pump 万一卡在慢查询上，标志保持 true 才能拦住新分片）。
+    abortAll = false;
+    // 停止期间点过重试/新加了文件的话，队列里还有活就补一泵；
+    // 正常停止后队列已被 stopAllUploads 清空，这里自然不会泵。
+    if (pumpQueued && S.queue.some((t) => !t.done && !t.err)) { pumpQueued = false; pump(); }
+  } else if (S.queue.every((t) => t.done)) {
     toast('全部上传完成');
     loadList();
     setTimeout(() => { S.queue = []; renderUpload(); }, 2500);
@@ -1843,6 +1999,37 @@ async function pump() {
     if (bad) toast(bad + ' 个文件没传完，点「重试」从断点继续');
   }
   if (pumpQueued) { pumpQueued = false; pump(); }
+}
+
+// 「停止上传」完整流程：掐在途分片 → 等 pump 退出 → 清服务端分片缓存（.part/.part.meta）
+// → 清队列。abortAll 标志由 pump 收尾时复位，这里不碰。
+async function stopAllUploads() {
+  if (!S.busy) {   // 没在传（或刚好传完了）：直接清队列就行
+    S.queue = [];
+    lastStruct = '';
+    renderUpload();
+    return;
+  }
+  abortAll = true;
+  liveChunks.forEach((x) => { try { x.abort(); } catch (e) {} });
+  // 等 pump 退出：各层循环最迟在下一个检查点返回，sleep/statusOf 都有超时兜底。
+  // 10 秒保险丝：万一有意外挂点，也照常往下走（pump 退出后自己会复位标志）。
+  for (let i = 0; i < 50 && S.busy; i++) await sleep(200);
+  // 清服务端分片缓存。已完成的任务成品已落盘，不碰；没传完的把缓存也删了，
+  // 下次再传同名文件从零开始，不会撞上这次的半成品区间表。
+  const targets = S.queue.filter((t) => !t.done);
+  await Promise.all(targets.map((t) =>
+    api('/api/fs/upload/abort?root=' + encodeURIComponent(S.root) +
+      '&dir=' + encodeURIComponent(t.dir || S.path) +
+      '&name=' + encodeURIComponent(t.file.name), null, 'DELETE').catch((e) => {
+      clog('清分片缓存失败 ' + t.file.name + ' : ' + (e && e.message ? e.message : e));
+    })
+  ));
+  clog('上传被用户停止，清理 ' + targets.length + ' 个任务的分片缓存');
+  S.queue = [];
+  lastStruct = '';
+  renderUpload();
+  toast(targets.length ? '已停止上传，未传完的部分已丢弃' : '已停止上传');
 }
 
 // 发一片：字节交给系统（upload.onload）就算发送完成，**不等 HTTP 响应**。
@@ -1863,10 +2050,18 @@ const SEND_TAIL_MS = 300;
 // promise 永久 pending —— 整轮 sendRound 挂死，界面停在 100%。这道保险丝保证「一定会返回」。
 const SEND_HARD_MS = 15000;
 
+// 「停止上传」的全局开关：置 true 后在途分片被整批 abort、各层循环尽快退出。
+// 只在 stopAllUploads() 里置 true、等 pump 收尾后复位，别的地方别碰。
+let abortAll = false;
+const liveChunks = new Set();
+
 // 返回 'sent' | 'timeout' | 'error' | 'aborted'
 function postChunk(url, blob, onSent) {
+  // 全局中止：不再发新片，直接按 aborted 返回，让调用方的循环自己退出
+  if (abortAll) return Promise.resolve('aborted');
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
+    liveChunks.add(xhr);   // 登记在途分片，「停止上传」时要整批掐掉
     xhr.open('POST', url, true);
     xhr.responseType = 'text';
     let done = false;
@@ -1876,6 +2071,7 @@ function postChunk(url, blob, onSent) {
     const fin = (why) => {
       if (done) return;
       done = true;
+      liveChunks.delete(xhr);
       if (timer) { clearTimeout(timer); timer = null; }
       if (hard) { clearTimeout(hard); hard = null; }
       // 主动断开：iOS Safari 对同一 origin 只有 6 条 HTTP/1.1 连接，
@@ -1914,6 +2110,7 @@ async function statusOf(t, dir) {
 
 async function uploadOne(t) {
   const dir = S.path;
+  t.dir = dir;   // 停止上传后清服务端分片缓存要按「任务实际用的目录」来
   if (!t.size) {
     t.err = '文件大小为 0，可能没从 iCloud 下载完';
     clog('上传中止(大小为0) ' + t.file.name);
@@ -1968,11 +2165,14 @@ async function uploadOne(t) {
   const tStart = Date.now();
 
   for (let round = 1; round <= 40 && pending.length; round++) {
+    if (abortAll) return;   // 用户点了「停止上传」，别再开新一轮
     const sentCount = pending.length;
     t.round = round;
     t.pendingN = pending.length;
     await sendRound(t, dir, pending, conc);
+    if (abortAll) return;
     await sleep(260);
+    if (abortAll) return;
 
     let st = null;
     try { st = await statusOf(t, dir); } catch (e) { clog('查断点失败：' + e.message); }
@@ -2019,6 +2219,7 @@ async function uploadOne(t) {
   renderUpload();
   let fin = null;
   for (let i = 0; i < 3; i++) {
+    if (abortAll) return;   // 中止时不做最终核对，也别把任务标成 err
     try {
       fin = await statusOf(t, dir);
       if (fin && fin.code === 0 && fin.data) break;
@@ -2057,6 +2258,7 @@ async function sendRound(t, dir, list, conc) {
   let idx = 0;
   const run = async () => {
     while (true) {
+      if (abortAll) return;   // 中止：不再发新片
       const i = idx++;
       if (i >= list.length) return;
       const [s, e] = list[i];
@@ -2071,6 +2273,7 @@ async function sendRound(t, dir, list, conc) {
         scheduleRender();
       });
       delete t.partial[i];
+      if (abortAll) return;
       if (why === 'sent') {
         // 乐观计数：先按已发出算，进度条才会往前走；下一轮 status 会用权威值校正回来。
         // 但**封顶到 99%**：最后那 1% 只有服务端说「文件已经落盘」才算数。
@@ -2116,6 +2319,13 @@ function renderUpload() {
     lastStruct = key;
     let html = '<div class="up-head">上传队列 <span class="muted" id="upActive"></span>' +
       '<button class="icon-btn" id="upClose">\u00d7</button></div>';
+    // 队列里有 30MB+ 的大文件时提示：亮屏锁已申请，但更稳的路还是系统传输
+    if (S.queue.some((t) => t.size >= 30 * 1024 * 1024)) {
+      html += '<div class="up-tip">大文件上传中：<b>亮屏锁已自动申请</b>（页面保持在前台就不会熄屏）。' +
+        '更推荐改用系统「文件」App（iOS）/ 文件管理器（安卓）<b>连 WebDAV 或 SMB</b>：' +
+        '传输由系统接管，锁屏、切后台都能传完。地址在管理台概览页（形如 <code>' +
+        location.origin + '/dav/</code>）。</div>';
+    }
     S.queue.forEach((t, i) => {
       html += '<div class="up-row">' +
         '<div class="up-name">' + esc(t.file.name) + '</div>' +
@@ -2127,7 +2337,13 @@ function renderUpload() {
     box.innerHTML = html;
     box.classList.add('on');
     $('upClose').addEventListener('click', () => {
-      if (S.busy) { toast('正在上传中，请等当前文件传完'); return; }
+      if (S.busy) {
+        // 用户原话（2026-11-01）：上传中点关闭要「问他一下，确定的话就得停」。
+        const n = S.queue.filter((t) => !t.done).length;
+        if (!confirm('正在上传中，确定要停止吗？\n' + n + ' 个未传完的任务将丢弃（已传完的文件不受影响）。')) return;
+        stopAllUploads();
+        return;
+      }
       S.queue = [];
       lastStruct = '';
       renderUpload();
@@ -2241,19 +2457,21 @@ $('recent').addEventListener('click', (e) => {
 });
 
 
-// 点同一个 chip = 翻方向；点另一个 chip = 换维度（沿用该维度上次的方向）
-document.querySelectorAll('#sortBar [data-sort]').forEach((b) => {
-  b.addEventListener('click', () => {
-    const k = b.dataset.sort;
-    if (S.sort.by === k) {
-      S.sort.dir[k] = S.sort.dir[k] === 'asc' ? 'desc' : 'asc';
-    } else {
-      S.sort.by = k;
-    }
-    saveSort();
-    renderSort();
-    renderList();   // 只重排列表，不重新请求：排序是本地行为
-  });
+// 一个按钮循环切四态：名称↑ → 名称↓ → 时间↓ → 时间↑ → 名称↑。
+// 排成这个顺序是因为「先按名字、再按时间」最常用，而时间默认要新的在前（↓），
+// 切到时间那次直接给 ↓ 比先给「最老的在前」合手。
+const SORT_CYCLE = [
+  ['name', 'asc'], ['name', 'desc'], ['time', 'desc'], ['time', 'asc'],
+];
+$('btnSort').addEventListener('click', () => {
+  const cur = SORT_CYCLE.findIndex((c) => c[0] === S.sort.by && c[1] === S.sort.dir[S.sort.by]);
+  const next = SORT_CYCLE[(cur + 1) % SORT_CYCLE.length];
+  S.sort.by = next[0];
+  S.sort.dir[next[0]] = next[1];
+  saveSort();
+  renderSort();
+  renderList();          // 只重排列表，不重新请求：排序是本地行为
+  toast('排序：' + sortLabel());   // 手机上按钮只有图标，不提示一句根本不知道点了什么
 });
 renderSort();
 
@@ -2268,8 +2486,10 @@ renderSort();
 // 画完转成 <img> 展示：手机上 canvas 长按不弹菜单，img 才能“长按保存”。
 
 const POSTER_W = 1080;
-const POSTER_H = 1620;
-const POSTER_QR_URL = 'https://github.com/sylvesterzhang/selfnas';
+const POSTER_H = 2220;
+// 海报二维码的落点：目标读者是普通用户，扫了就该去**下载页**，
+// 仓库主页/源码对他们没有意义。（码本身是贴的 github-qr.png，两者要一致）
+const POSTER_QR_URL = 'https://github.com/sylvesterzhang/selfnas/releases/latest';
 let posterImgs = null;   // 图片只加载一次，反复打开不必重下
 
 function loadImg(src) {
@@ -2297,14 +2517,59 @@ function fitBox(img, maxW, maxH) {
   return { w: Math.round(img.width * k), h: Math.round(img.height * k) };
 }
 
+// —— 平台 logo：直接喂 SVG path 给 Path2D，矢量清晰、不额外加图片资源 ——
+const LOGO_WIN = 'M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zm12.6 0H12.6V0H24v11.4z';
+const LOGO_APPLE = 'M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701';
+
+// 把 24×24 的 logo 路径等比缩放后画在以 (cx,cy) 为中心的框里
+function pathLogo(c, d, cx, cy, maxH, color) {
+  const k = maxH / 24;
+  c.save();
+  c.translate(cx - 12 * k, cy - 12 * k);
+  c.scale(k, k);
+  c.fillStyle = color;
+  c.fill(new Path2D(d));
+  c.restore();
+}
+
+// Linux 的 Tux：简易企鹅（Path2D 画不了带镂空的双色，用基本图形拼，反而更像图标）
+function drawTux(c, cx, cy, S) {
+  const top = cy - S / 2;
+  const bg = '#eef4fb';
+  c.fillStyle = '#1e2a3a';
+  c.beginPath(); c.ellipse(cx, top + S * 0.56, S * 0.31, S * 0.40, 0, 0, Math.PI * 2); c.fill();
+  c.fillStyle = bg;
+  c.beginPath(); c.ellipse(cx, top + S * 0.64, S * 0.20, S * 0.29, 0, 0, Math.PI * 2); c.fill();
+  c.fillStyle = bg;
+  c.beginPath(); c.arc(cx - S * 0.10, top + S * 0.30, S * 0.06, 0, Math.PI * 2); c.fill();
+  c.beginPath(); c.arc(cx + S * 0.10, top + S * 0.30, S * 0.06, 0, Math.PI * 2); c.fill();
+  c.fillStyle = '#f2a33c';
+  c.beginPath();
+  c.moveTo(cx, top + S * 0.38);
+  c.lineTo(cx - S * 0.09, top + S * 0.48);
+  c.lineTo(cx + S * 0.09, top + S * 0.48);
+  c.closePath(); c.fill();
+  c.beginPath(); c.ellipse(cx - S * 0.12, top + S * 0.95, S * 0.09, S * 0.045, 0, 0, Math.PI * 2); c.fill();
+  c.beginPath(); c.ellipse(cx + S * 0.12, top + S * 0.95, S * 0.09, S * 0.045, 0, 0, Math.PI * 2); c.fill();
+}
+
+function bubble(c, x, y, w, h, r, fill) {
+  roundRectPath(c, x, y, w, h, r);
+  c.fillStyle = fill;
+  c.fill();
+}
+
 async function renderPoster() {
   if (!posterImgs) {
     posterImgs = await Promise.all([
       loadImg('/assets/img/poster-art.png'),
       loadImg('/assets/img/github-qr.png'),
+      // 品牌字标（自带上「SelfNAS」六个字母）。加载失败给 null，退回排字兜底 ——
+      // 不能因为一张装饰图挂掉整张海报。
+      loadImg('/assets/img/wordmark.png').catch(() => null),
     ]);
   }
-  const [art, qr] = posterImgs;
+  const [art, qr, wm] = posterImgs;
 
   const cv = document.createElement('canvas');
   cv.width = POSTER_W;
@@ -2328,103 +2593,298 @@ async function renderPoster() {
   c.restore();
 
   const FONT = '"Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", -apple-system, sans-serif';
+  const MARGIN = 96;
+  const CONTENT_W = POSTER_W - MARGIN * 2;
 
-  // —— 标题
-  c.fillStyle = '#0f1b2d';
-  c.font = '700 104px ' + FONT;
-  c.textBaseline = 'alphabetic';
-  c.fillText('selfnas', 96, 258);
+  // 中文文案长度不固定，写死字号容易出框 —— 统一按最大宽度往下缩
+  function fitText(text, weight, size, minSize) {
+    let s = size;
+    c.font = weight + ' ' + s + 'px ' + FONT;
+    while (c.measureText(text).width > CONTENT_W && s > minSize) {
+      s -= 1;
+      c.font = weight + ' ' + s + 'px ' + FONT;
+    }
+    return s;
+  }
+
+  // —— 标题：直接用品牌字标（图里已经带「SelfNAS」六个字母，不再用 canvas 排字）
+  // 位置对齐原来那行 104px 文字的视觉框：上沿 ≈182、基线 258、字高 ≈80。
+  // 这张图已经裁到墨迹边界且是透明底，所以按目标矩形直接铺，不用再留内边距。
+  if (wm) {
+    const wmH = 80;
+    const wmW = wmH * (wm.width / wm.height);
+    c.drawImage(wm, MARGIN, 182, wmW, wmH);
+  } else {
+    c.fillStyle = '#0f1b2d';
+    c.font = '700 104px ' + FONT;
+    c.textBaseline = 'alphabetic';
+    c.fillText('selfnas', MARGIN, 258);
+  }
 
   // 标题右侧的小标签
   c.font = '400 30px ' + FONT;
   const tag = '私有文件站';
   const tagW = c.measureText(tag).width + 40;
-  roundRectPath(c, POSTER_W - 96 - tagW, 198, tagW, 56, 28);
+  roundRectPath(c, POSTER_W - MARGIN - tagW, 198, tagW, 56, 28);
   c.fillStyle = 'rgba(24, 95, 165, 0.10)';
   c.fill();
   c.fillStyle = '#185fa5';
-  c.fillText(tag, POSTER_W - 96 - tagW + 20, 236);
+  c.fillText(tag, POSTER_W - MARGIN - tagW + 20, 236);
 
   // —— 一句话说完它是干什么的
   c.fillStyle = '#1e2a3a';
   c.font = '600 46px ' + FONT;
-  c.fillText('把电脑变成你自己的文件中心', 96, 348);
+  c.fillText('把电脑变成你自己的文件中心', MARGIN, 348);
 
+  // —— 卖点：轻、不装东西（这才是它跟网盘 / NAS 的区别）
   c.fillStyle = '#64748b';
-  c.font = '400 32px ' + FONT;
-  c.fillText('不用装 App，不用上传网盘——手机浏览器打开就能用', 96, 408);
+  let subSize = fitText('不用装 App · 不用上传网盘 · 不用装 NAS 系统', '400', 32, 24);
+  c.font = '400 ' + subSize + 'px ' + FONT;
+  c.fillText('不用装 App · 不用上传网盘 · 不用装 NAS 系统', MARGIN, 404);
 
-  // —— 插画（AI 生成，无文字，只做装饰）
-  // 插画自带浅色背景，直接贴会露出一块方形色差；套一张白底圆角卡片，
-  // 边界就变成"设计上的卡片"而不是"补丁"
-  const box = fitBox(art, 850, 460);
-  const cardX = (POSTER_W - box.w) / 2 - 16;
-  const cardW = box.w + 32;
-  const cardTop = 456;
-  const cardHt = box.h + 32;
-  c.save();
-  c.shadowColor = 'rgba(15, 27, 45, 0.08)';
-  c.shadowBlur = 26;
-  c.shadowOffsetY = 8;
-  roundRectPath(c, cardX, cardTop, cardW, cardHt, 28);
-  c.fillStyle = '#ffffff';
-  c.fill();
-  c.restore();
-  c.save();
-  roundRectPath(c, cardX + 1, cardTop + 1, cardW - 2, cardHt - 2, 27);
-  c.clip();
-  c.drawImage(art, (POSTER_W - box.w) / 2, cardTop + 16, box.w, box.h);
-  c.restore();
+  // —— 定位：补上「电脑↔手机」这块空白，不用再找线
+  c.fillStyle = '#8a97a8';
+  subSize = fitText('小到几乎不占地方，让电脑和手机随时互通，再也不用找数据线', '400', 30, 22);
+  c.font = '400 ' + subSize + 'px ' + FONT;
+  c.fillText('小到几乎不占地方，让电脑和手机随时互通，再也不用找数据线', MARGIN, 450);
 
-  // —— 三个功能点
+  // —— 主视觉卡：**整张卡就是一张图**
+  // 之前是「插画一张卡 + 文字浮在外面」，视觉上像两块东西拼在一起。
+  // 现在底图铺满整卡，平台图标和三个卖点都压在图里 —— 图片和文字是一个整体。
+  // 文字必须用 canvas 画（AI 画中文会缺笔画），所以底图只留画面、不带任何字。
   const feats = [
     ['躺着看片', '手机直接播放电脑里的电影，MKV 也能放'],
     ['拍完就传', '手机照片视频一键传回电脑，接着剪辑修图'],
     ['随手就翻', '家里任意一块硬盘，都能用手机直接翻'],
   ];
-  let fy = 1030;
-  feats.forEach(([title, desc]) => {
-    // 勾选圆点
+
+  const heroX = MARGIN;
+  const heroW = CONTENT_W;
+  const heroTop = 496;
+  const heroH = 880;
+
+  // 卡片底（圆角 + 阴影）
+  c.save();
+  c.shadowColor = 'rgba(15, 27, 45, 0.10)';
+  c.shadowBlur = 30;
+  c.shadowOffsetY = 10;
+  roundRectPath(c, heroX, heroTop, heroW, heroH, 32);
+  c.fillStyle = '#ffffff';
+  c.fill();
+  c.restore();
+
+  // 底图铺满整卡（cover：等比放大到盖满，多余部分裁掉）
+  c.save();
+  roundRectPath(c, heroX, heroTop, heroW, heroH, 32);
+  c.clip();
+  // 垂直方向不居中：底图上半是空天、下半是干净地面，整体往上抬 heroLift 像素，
+  // 把画面里的空白从「卖点文字头顶」挪到「卡顶图标头顶」，文字区才有呼吸感。
+  // ⚠️ 上抬时**必须把高度一起补足**（heroH + heroLift）：只改 y 不改尺寸，
+  // 底图底边就会停在半腰，卡片最下面那条露出白卡底色 —— 用户一眼就看出来
+  // 「下半段变白了、背景没铺到卡片底部」（2026-11-01 实测 y=1320~1374 全是 255,255,255）。
+  // 现在按「底边贴住卡底」反推缩放，多出来的高度从**画面顶部**裁掉，底部永远压满。
+  const heroLift = 70;
+  const heroScale = Math.max(heroW / art.width, (heroH + heroLift + 4) / art.height);
+  const heroDW = art.width * heroScale;
+  const heroDH = art.height * heroScale;
+  c.drawImage(art, heroX + (heroW - heroDW) / 2, heroTop - heroLift, heroDW, heroDH);
+
+  // 上下各铺一层白色渐变，只用来「提亮 + 让文字够对比」，**不能盖死底图**。
+  // 早期版本底部是 0.88~0.99 的白，下半张卡直接变纯白 —— 看上去还是「上面一张图、
+  // 下面一块白」，割裂感没解决（2026-11-01 用户第二次提）。现在最重只到 0.32，
+  // 底图那片浅蓝地面完整透出来，卖点文字是压在图上的，不是压在白色上。
+  const topScrim = c.createLinearGradient(0, heroTop, 0, heroTop + 170);
+  topScrim.addColorStop(0, 'rgba(255,255,255,0.66)');
+  topScrim.addColorStop(1, 'rgba(255,255,255,0)');
+  c.fillStyle = topScrim;
+  c.fillRect(heroX, heroTop, heroW, 170);
+
+  const botScrim = c.createLinearGradient(0, heroTop + heroH - 360, 0, heroTop + heroH);
+  botScrim.addColorStop(0, 'rgba(255,255,255,0)');
+  botScrim.addColorStop(1, 'rgba(255,255,255,0.15)');
+  c.fillStyle = botScrim;
+  c.fillRect(heroX, heroTop + heroH - 360, heroW, 360);
+  c.restore();
+
+  // —— 支持平台（压在图顶部，属于这张卡的一部分）
+  (function drawPlatforms() {
+    const items = [
+      { kind: 'win', label: 'Windows' },
+      { kind: 'mac', label: 'macOS' },
+      { kind: 'linux', label: 'Linux' },
+    ];
+    const chipH = 64;
+    const chipPadX = 20;
+    const iconBox = 34;
+    const gapIcon = 12;
+    const gapChip = 16;
+    const y = heroTop + 44;
+
+    c.font = '600 28px ' + FONT;
+    const widths = items.map(it => chipPadX * 2 + iconBox + gapIcon + c.measureText(it.label).width);
+    const total = widths.reduce((a, b) => a + b, 0) + gapChip * (items.length - 1);
+    let x = heroX + (heroW - total) / 2;
+
+    items.forEach((it, i) => {
+      const w = widths[i];
+      roundRectPath(c, x, y, w, chipH, chipH / 2);
+      c.fillStyle = 'rgba(255,255,255,0.92)';
+      c.fill();
+      c.strokeStyle = 'rgba(24,95,165,0.14)';
+      c.lineWidth = 2;
+      c.stroke();
+
+      const iconCx = x + chipPadX + iconBox / 2;
+      const iconCy = y + chipH / 2;
+      if (it.kind === 'win') {
+        pathLogo(c, LOGO_WIN, iconCx, iconCy, iconBox, '#0078d4');
+      } else if (it.kind === 'mac') {
+        pathLogo(c, LOGO_APPLE, iconCx, iconCy - 1, iconBox + 2, '#1d1d1f');
+      } else {
+        drawTux(c, iconCx, iconCy, iconBox + 4);
+      }
+
+      c.fillStyle = '#0f1b2d';
+      c.font = '600 28px ' + FONT;
+      c.textBaseline = 'middle';
+      c.fillText(it.label, x + chipPadX + iconBox + gapIcon, iconCy + 1);
+      c.textBaseline = 'alphabetic';
+
+      x += w + gapChip;
+    });
+  })();
+
+  // —— 三个卖点（同样压在图底部，跟图是一体的）
+  const featTop = heroTop + 660;
+  const featStep = 74;
+  feats.forEach(([title, desc], i) => {
+    const fy = featTop + i * featStep;
     c.beginPath();
-    c.arc(118, fy - 12, 17, 0, Math.PI * 2);
+    c.arc(heroX + 56, fy - 12, 17, 0, Math.PI * 2);
     c.fillStyle = '#185fa5';
     c.fill();
     c.strokeStyle = '#fff';
     c.lineWidth = 4;
     c.lineCap = 'round';
     c.beginPath();
-    c.moveTo(110, fy - 12);
-    c.lineTo(116, fy - 6);
-    c.lineTo(127, fy - 19);
+    c.moveTo(heroX + 48, fy - 12);
+    c.lineTo(heroX + 54, fy - 6);
+    c.lineTo(heroX + 65, fy - 19);
     c.stroke();
 
     c.fillStyle = '#0f1b2d';
-    c.font = '600 36px ' + FONT;
-    c.fillText(title, 158, fy);
+    c.font = '600 34px ' + FONT;
+    c.fillText(title, heroX + 100, fy);
     const tw = c.measureText(title).width;
-    c.fillStyle = '#64748b';
-    c.font = '400 32px ' + FONT;
-    c.fillText('　' + desc, 158 + tw, fy);
-    fy += 74;
+    c.fillStyle = '#5b6b7f';
+    c.font = '400 30px ' + FONT;
+    c.fillText('　' + desc, heroX + 100 + tw, fy);
   });
 
-  // —— 二维码卡片
-  const cardY = 1236;
+  // —— 「不想折腾？让 AI 帮你装」：把提示词直接演一遍（模拟聊天框）
+  // 为什么要这块：很多人不会敲命令、也懒得看文档。告诉他「把地址丢给 WorkBuddy 就行」，
+  // 比再写十条安装命令都有效 —— 而且这是真实可行的（AI 能下载、解压、起服务）。
+  //
+  // 对话分工很关键：「设成开机自启」必须由**用户**提，AI 只答应「好，我来下载安装」。
+  // 否则读者根本不知道这软件还带自启能力 —— 需求得从用户嘴里说出来才像真实场景。
+  const aiY = 1416;
+  const aiCardH = 356;
+  c.save();
+  c.shadowColor = 'rgba(15, 27, 45, 0.10)';
+  c.shadowBlur = 32;
+  c.shadowOffsetY = 10;
+  roundRectPath(c, MARGIN, aiY, CONTENT_W, aiCardH, 28);
+  c.fillStyle = '#ffffff';
+  c.fill();
+  c.restore();
+
+  const aiPadX = MARGIN + 36;
+  const aiRight = POSTER_W - aiPadX;
+
+  c.fillStyle = '#0f1b2d';
+  c.font = '700 36px ' + FONT;
+  c.fillText('不想折腾？让 AI 帮你装', aiPadX, aiY + 62);
+
+  c.fillStyle = '#64748b';
+  c.font = '400 26px ' + FONT;
+  c.fillText('把 GitHub 地址发给 WorkBuddy，一句话就能装好', aiPadX, aiY + 102);
+
+  // 用户气泡（右对齐，主色）：真实场景是「把地址粘进去 + 说一句要装」
+  // ⚠️ 地址必须真的写出来。早期只写「帮我装一下 selfnas」，会让人以为 AI 天生知道
+  // 装哪个仓库；而「把地址丢给 AI」正是这张海报要教的那一步（2026-11-01 用户指出）。
+  // 地址用等宽字体，看起来就是粘进来的链接，不是手打的中文。
+  (function userBubble() {
+    const urlLine = 'github.com/sylvesterzhang/selfnas';
+    const sayLine = '帮我装一下，顺便设成开机自启';
+    const urlFont = '400 24px ui-monospace, Consolas, monospace';
+    const sayFont = '400 26px ' + FONT;
+
+    c.font = urlFont;
+    const wUrl = c.measureText(urlLine).width;
+    c.font = sayFont;
+    const wSay = c.measureText(sayLine).width;
+
+    const padX = 28, lineH = 40;
+    const w = Math.max(wUrl, wSay) + padX * 2;
+    const h = 2 * lineH + 26;
+    const x = aiRight - w;
+    const y = aiY + 126;
+    bubble(c, x, y, w, h, 22, '#185fa5');
+
+    c.fillStyle = '#ffffff';
+    const baseY = y + 20 + 26;
+    c.font = urlFont;
+    c.fillText(urlLine, x + padX, baseY);
+    c.font = sayFont;
+    c.fillText(sayLine, x + padX, baseY + lineH);
+  })();
+
+  // AI 气泡（左对齐，浅底）+ 小头像：只答应「下载安装」，不重复用户的需求
+  (function aiBubble() {
+    const txt = '好，我来下载安装。';
+    c.font = '400 26px ' + FONT;
+    const padX = 26;
+    const w = c.measureText(txt).width + padX * 2;
+    const h = 72;
+    const avR = 21;
+    const y = aiY + 248;
+    const bx = aiPadX + avR * 2 + 16;
+
+    c.beginPath();
+    c.arc(aiPadX + avR, y + h / 2, avR, 0, Math.PI * 2);
+    c.fillStyle = '#185fa5';
+    c.fill();
+    c.fillStyle = '#ffffff';
+    c.font = '700 24px ' + FONT;
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    c.fillText('W', aiPadX + avR, y + h / 2 + 1);
+    c.textAlign = 'left';
+    c.textBaseline = 'alphabetic';
+
+    bubble(c, bx, y, w, h, 22, '#eef3f9');
+    c.fillStyle = '#1e2a3a';
+    c.font = '400 26px ' + FONT;
+    c.fillText(txt, bx + padX, y + 46);
+  })();
+
+  // —— 二维码卡片（压轴：看完卖点和装法，最后才引导扫码）
+  const cardY = 1812;
   const cardH = 288;
   c.save();
   c.shadowColor = 'rgba(15, 27, 45, 0.10)';
   c.shadowBlur = 32;
   c.shadowOffsetY = 10;
-  roundRectPath(c, 96, cardY, POSTER_W - 192, cardH, 28);
+  roundRectPath(c, MARGIN, cardY, CONTENT_W, cardH, 28);
   c.fillStyle = '#ffffff';
   c.fill();
   c.restore();
 
-  // 二维码本体（真码，扫了直接到 GitHub）。
+  // 二维码本体（真码，扫了直达 GitHub 下载页——普通用户要的是下载，不是看源码）。
   // 源图 512px，这里画 256px —— **正好 1/2 的整数倍缩放**，每个模块边缘不产生小数抗锯齿，
   // 扫描识别率最高；随手给个 0.37 倍反而会发虚。
   const qrSize = 256;
-  const qrX = 132;
+  const qrX = MARGIN + 36;
   const qrY = cardY + (cardH - qrSize) / 2;
   c.fillStyle = '#ffffff';
   c.fillRect(qrX, qrY, qrSize, qrSize);
@@ -2435,11 +2895,11 @@ async function renderPoster() {
   c.fillStyle = '#0f1b2d';
   let fs = 38;
   c.font = '700 ' + fs + 'px ' + FONT;
-  while (c.measureText('扫码看源码，完全开源免费').width > textW && fs > 24) {
+  while (c.measureText('扫码下载，完全开源免费').width > textW && fs > 24) {
     fs -= 2;
     c.font = '700 ' + fs + 'px ' + FONT;
   }
-  c.fillText('扫码看源码，完全开源免费', tx, cardY + 90);
+  c.fillText('扫码下载，完全开源免费', tx, cardY + 90);
 
   c.fillStyle = '#185fa5';
   fs = 24;
@@ -2463,7 +2923,7 @@ async function renderPoster() {
   c.fillStyle = '#94a3b8';
   c.font = '400 28px ' + FONT;
   c.textAlign = 'center';
-  c.fillText('selfnas · 让手机和电脑之间没有那根线', POSTER_W / 2, 1596);
+  c.fillText('selfnas · 让手机和电脑之间没有那根线', POSTER_W / 2, 2154);
   c.textAlign = 'left';
 
   return cv.toDataURL('image/png');
