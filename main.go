@@ -828,6 +828,12 @@ func routes() http.Handler {
 	mux.HandleFunc("/api/fs/roots", guardAuth(handleFSRoots))
 	mux.HandleFunc("/api/fs/list", guardAuth(handleFSList))
 	mux.HandleFunc("/api/fs/thumb", guardAuth(handleFSThumb))
+	// 音频标签：列表里显示「歌名 · 歌手」，播放器拿去做锁屏信息（独立接口 + 缓存，
+	// 不能塞进 list —— 一个音乐文件夹几百个文件会把列表拖死）
+	mux.HandleFunc("/api/fs/tags", guardAuth(handleFSTags))
+	// 封面与歌词：播放页要的大块数据，同样等播到这首才去拿（见 art.go）
+	mux.HandleFunc("/api/fs/cover", guardAuth(handleFSCover))
+	mux.HandleFunc("/api/fs/lyrics", guardAuth(handleFSLyrics))
 	mux.HandleFunc("/api/fs/download", guardAuth(handleFSDownload))
 	// MKV/AVI/TS 这类 iOS 播不了的容器，实时换封装成 MP4 流
 	mux.HandleFunc("/api/fs/play", guardAuth(handleFSPlay))
@@ -884,6 +890,14 @@ func routes() http.Handler {
 			return
 		}
 		handleProgressGet(w, r)
+	}))
+	// 上次浏览的目录：刷新后回到原地（权限没了就清记录回默认根，见 handleLastDirSet）
+	mux.HandleFunc("/api/fs/lastdir", guardAuth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			handleLastDirSet(w, r)
+			return
+		}
+		handleLastDirGet(w, r)
 	}))
 	mux.HandleFunc("/api/fs/lastopen", guardAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {

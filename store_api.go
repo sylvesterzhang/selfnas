@@ -226,6 +226,40 @@ func handleLastOpenSet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 0, "ok", nil)
 }
 
+// ---------- 上次浏览的目录 ----------
+// GET  → { root, path }（没有就全空）
+// POST { root, path } → 覆盖写入；root 为空 → 清除（权限被收走后前端让它失效）。
+// path 允许为空：停在根目录也是一种「位置」。
+func handleLastDirGet(w http.ResponseWriter, r *http.Request) {
+	root, path := getLastDir(currentUserOf(r))
+	writeJSON(w, 0, "ok", map[string]any{"root": root, "path": path})
+}
+
+func handleLastDirSet(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		Root string `json:"root"`
+		Path string `json:"path"`
+	}
+	if !decodeBody(r, &b) {
+		writeJSON(w, 400, "请求格式错误", nil)
+		return
+	}
+	if strings.TrimSpace(b.Root) == "" {
+		if err := clearLastDir(currentUserOf(r)); err != nil {
+			writeJSON(w, 500, "清除失败: "+err.Error(), nil)
+			return
+		}
+		writeJSON(w, 0, "ok", nil)
+		return
+	}
+	root := canonicalRoot(b.Root)
+	if err := setLastDir(currentUserOf(r), root, strings.TrimSpace(b.Path)); err != nil {
+		writeJSON(w, 500, "保存失败: "+err.Error(), nil)
+		return
+	}
+	writeJSON(w, 0, "ok", nil)
+}
+
 // ---------- 播放进度 ----------
 //
 // 视频看到哪、下次接着看。与「最近 / 收藏」同口径：进库、跟账号走。

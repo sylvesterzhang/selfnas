@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id);
 // 20 秒纯粹是「宁可慢一点也不要永久挂住」的保险丝。
 const API_TIMEOUT_MS = 20000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const S = { roots: [], root: '', rootName: '', rootDrive: '', path: '', readonly: false, entries: [], queue: [], busy: false, lastOpen: null };
+const S = { roots: [], root: '', rootName: '', rootDrive: '', path: '', readonly: false, entries: [], queue: [], busy: false, lastOpen: null, tags: {} };
 // 4MB：8MB 一片时，一次「回包丢失」就要白等几十秒并且重传 8MB；
 // 切到 4MB 后单片失败代价减半，进度也更细。局域网 2-5ms 的 RTT 撑得起这个请求数（253MB≈64 片）。
 const CHUNK = 4 * 1024 * 1024;
@@ -78,7 +78,10 @@ function applyTheme(t) {
 async function loadRoots() {
   const r = await api('/api/fs/roots');
   if (r.code !== 0) return;
-  S.roots = (r.data && r.data.roots) || r.data || [];
+  // 没有可用根时后端给的是 {roots: null}，原来的 `|| r.data` 会把整个对象当数组存下来，
+  // 后面 S.roots.map / forEach 全炸 —— 这里按数组兜一次
+  const rd = r.data;
+  S.roots = Array.isArray(rd) ? rd : (Array.isArray(rd && rd.roots) ? rd.roots : []);
   S.user = (r.data && r.data.user) || '';
   applyTheme((r.data && r.data.theme) || 'light');
   // 受限账号没有管理台权限，齿轮藏掉（点进去也只有 401）
@@ -94,7 +97,8 @@ async function loadRoots() {
     S.rootDrive = S.roots[0].drive || '';
     S.path = '';
   }
-  renderRoots();
+  // 这里**不画**根栏：boot 还要去查「上次浏览的目录」，等最终确定选哪个根再画一次。
+  // 先画默认再跳恢复目标，刷新时芯片会先亮 D 再跳到 E —— 用户看到的就是"闪一下"。
 }
 
 // 根名必须带盘符：「资料 / 软件 / 文档」这种名字认不出是哪个物理盘，
@@ -128,13 +132,77 @@ async function loadList() {
   const r = await api('/api/fs/list?' + q(S.root, S.path));
   if (r.code !== 0) {
     $('list').innerHTML = '<div class="empty">' + esc(r.msg) + '</div>';
-    return;
+    return r.code;   // boot 要靠这个分辨「权限被收走了」还是「服务端抽风」
   }
   S.entries = r.data.entries || [];
   S.readonly = !!r.data.readonly;
   S.path = r.data.path || '';
   renderList();
   renderCrumb(r.data.parent);
+  loadTags();   // 目录里有音频才发请求；不 await，列表先出来再说
+  saveLastDir();
+  return 0;
+}
+
+// 上次浏览的目录：按账号存服务端（跟「最近 / 收藏」同一个库），刷新、换设备都回到原地。
+// 每次成功落进一个目录就覆盖一次；停根目录也算位置（path 为空），root 为空才代表「没记录」。
+function saveLastDir() {
+  api('/api/fs/lastdir', { root: S.root, path: S.path }).catch(() => {});
+}
+
+// 音频标签单独拉一次：几百首歌的 ID3 不能让列表等着（跟缩略图同一个道理）。
+// 拿到之后**就地改已有行**，不重绘整个列表 —— 重绘会把滚动位置打回顶部，
+// 几百首的文件夹里用户刚滚到一半，跳回顶上会骂人。
+async function loadTags() {
+  const dir = S.path;
+  const root = S.root;
+  if (!S.entries.some((e) => e.kind === 'audio')) return;
+  const key = root + '|' + dir;
+  if (S.tags[key]) { applyTags(); return; }
+  try {
+    const r = await api('/api/fs/tags?' + q(root, dir));
+    if (r.code !== 0) return;
+    const map = {};
+    (r.data || []).forEach((t) => { map[t.name] = t; });
+    S.tags[key] = map;
+    // 缓存只在一次会话里有用（翻回上一个目录不用再请求），别让它无限长：
+    // 逛几十个音乐目录、每目录几百条，攒起来就是几 MB 的垃圾
+    const keys = Object.keys(S.tags);
+    if (keys.length > 30) delete S.tags[keys[0]];
+    // 请求飞在路上时用户可能已经翻到别的目录了，别把 A 目录的标签贴到 B 目录
+    if (S.root === root && S.path === dir) { applyTags(); if (MP.on) mpRender(); }
+  } catch (e) { /* 标签拿不到就显示文件名，不影响任何功能 */ }
+}
+
+function tagOf(e) {
+  if (!e || e.kind !== 'audio') return null;
+  const map = S.tags[S.root + '|' + S.path];
+  return (map && map[e.name]) || null;
+}
+
+// 把已经画好的音频行改成「歌名 · 歌手」（数据到了才调）
+function applyTags() {
+  document.querySelectorAll('#list .row[data-audio]').forEach((row) => {
+    const e = S.entries.find((x) => x.name === row.dataset.name && !x.isDir);
+    if (!e) return;
+    const t = tagOf(e);
+    if (!t || (!t.title && !t.artist)) return;
+    const nameEl = row.querySelector('.name');
+    if (nameEl && t.title) { nameEl.textContent = t.title; nameEl.title = e.name; }
+    // 歌手小字：首次渲染时标签还没到，这里补建元素（插在收藏星前面，保持星在最后）
+    if (t.artist) {
+      let sub = row.querySelector('.row-sub');
+      if (!sub) {
+        sub = document.createElement('span');
+        sub.className = 'row-sub';
+        const line = row.querySelector('.name-line');
+        if (line) line.insertBefore(sub, row.querySelector('.row-star'));
+      }
+      sub.textContent = t.artist;
+    }
+    const metaEl = row.querySelector('.meta');
+    if (metaEl && t.artist) metaEl.textContent = t.artist + ' · ' + sizeText(e.size) + ' · ' + dateText(e.mtime);
+  });
 }
 
 function renderCrumb(parent) {
@@ -541,6 +609,13 @@ function renderList() {
     const row = document.createElement('div');
     row.className = 'row';
     row.dataset.name = e.name;   // 「最近/收藏」跳过来靠它定位到具体那一行
+    if (e.kind === 'audio') row.dataset.audio = '1';
+    // 音频优先显示标签里的歌名；标签还没到（或没有标签）就先显示文件名，
+    // 拿到之后由 applyTags 就地替换，列表不会重绘、滚动位置不会跳
+    const tg = tagOf(e);
+    const label = (tg && tg.title) || e.name;
+    const metaText = (tg && tg.artist ? tg.artist + ' · ' : '') +
+      (e.isDir ? '文件夹' : sizeText(e.size)) + ' · ' + dateText(e.mtime);
     // 「刚点开」标记：服务端记着账号最后一次点开的文件，建行时复原
     if (S.lastOpen && !e.isDir && S.root === S.lastOpen.root &&
         e.name === S.lastOpen.name && e.path === S.lastOpen.path) {
@@ -554,13 +629,16 @@ function renderList() {
     row.innerHTML =
       '<div class="ico' + (e.thumb ? ' wide' : '') + '">' + vis + '</div>' +
       '<div class="main"><div class="name-line">' +
-      '<span class="name">' + esc(e.name) + '</span>' +
+      '<span class="name" title="' + esc(e.name) + '">' + esc(label) + '</span>' +
+      // 歌手挂在歌名后面：桌面端的 .meta 整行是隐藏的（信息在独立列里），
+      // 不放这儿的话桌面上根本看不到歌手；手机端靠 .meta 显示，这个 span 会隐藏
+      (tg && tg.artist ? '<span class="row-sub">' + esc(tg.artist) + '</span>' : '') +
       // 收藏星是可点的真按钮：已收藏=金色实心常显；未收藏=灰色空心，桌面端悬停到行上才浮现
       //（手机端不显示，免得滑动时误触收藏）。紧跟在文件名后面，不占右侧列、不影响列对齐
       '<button class="row-star' + (fav ? '' : ' off') + '" title="' + (fav ? '已收藏，点一下取消' : '收藏') + '">' +
       (fav ? '★' : '☆') + '</button>' +
       '</div>' +
-      '<div class="meta">' + (e.isDir ? '文件夹' : sizeText(e.size)) + ' · ' + dateText(e.mtime) + '</div></div>' +
+      '<div class="meta">' + esc(metaText) + '</div></div>' +
       // col-size / col-time 只在桌面端显示（≥768px），手机端 display:none ——
       // 同一份 DOM，两种布局各取所需，不用维护两套渲染
       '<div class="col-size">' + (e.isDir ? '—' : sizeText(e.size)) + '</div>' +
@@ -704,7 +782,7 @@ function openViewer(e) {
   if (e.kind === 'image') {
     body.innerHTML = '<img src="' + dl + '&inline=1" alt="">';
   } else if (e.kind === 'audio') {
-    body.innerHTML = '<audio src="' + dl + '&inline=1" controls autoplay></audio>';
+    mountAudio(e);
   } else if (e.kind === 'pdf') {
     // 桌面浏览器自带 PDF 查看器，iframe 内嵌就能翻页缩放；
     // iOS Safari 的 iframe 只显示第一页还滚不动，所以手机上要靠「新页面打开」
@@ -724,6 +802,608 @@ function openViewer(e) {
     body.innerHTML = '<div class="viewer-msg">这个类型不能预览</div>';
     foot.innerHTML = '<a class="btn" href="' + dl + '">下载到本机</a>';
   }
+}
+
+// ---------- 音乐播放器 ----------
+// 音频不再是一个裸 <audio>：点一首就把当前目录里的歌排成队列，播完自动接下一首，
+// 同时把歌名 / 歌手喂给 MediaSession —— 桌面浏览器的标签页和系统媒体浮层、
+// 手机锁屏，认的都是这一份元数据。
+//
+// 队列**只到当前目录**为止，不跨目录、不循环、不随机：循环和随机属于后面的
+// 播放页，阶段一先把「点开一首能顺着听下去」这件事做好。
+// seq 是「播放顺序」：顺序模式就是 0,1,2…，随机模式是打乱后的索引表。
+// list 永远保持目录原顺序（队列列表照它显示），seq 只决定「下一首是谁」——
+// 两件事分开，切随机时列表不会跟着乱跳。
+const MP = {
+  on: false, root: '', dir: '', list: [], i: -1, el: null, seeking: false,
+  shuffle: false, seq: [], pos: 0, played: {},
+  // 歌词：lyric 是解析好的 [{t, s}]，t<0 表示整份没时间轴；lyIdx 是当前高亮行
+  lyric: [], lyIdx: -1, lyricTried: false, lyricToken: 0, qOpen: false,
+  // 循环模式：0 顺序 / 1 列表循环（走完绕回开头）/ 2 单曲循环（这首放完重放这首）。
+  // 循环作用在 MP.seq 上，随机模式下绕回的是洗牌后的第一首，不重新洗牌
+  repeat: 0,
+};
+
+// 播放器图标：走 SVG 不用字符 —— ⏮ / ⏭ 这种符号在不同系统上字形差很多，
+// 有的渲染成 emoji 彩色块，跟界面完全不搭
+const MP_ICON = {
+  play: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M8.2 5.4v13.2L19 12z"/></svg>',
+  pause: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><rect x="6.8" y="5" width="3.8" height="14" rx="1.3"/><rect x="13.4" y="5" width="3.8" height="14" rx="1.3"/></svg>',
+  prev: '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M7 5h2.1v14H7zM19 5.8v12.4L9.9 12z"/></svg>',
+  next: '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M14.9 5H17v14h-2.1zM5 5.8v12.4L14.1 12z"/></svg>',
+  shuffle: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>',
+  loopOne: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/><path d="M11.6 10.1 13.2 9.2v5.6"/></svg>',
+  loop: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>',
+  list: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h11M4 12h11M4 17h7"/><path d="M18.5 10.5v7.2"/><circle cx="17" cy="18" r="1.8" fill="currentColor" stroke="none"/></svg>',
+  note: '<svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V6.6l10-2v10.8"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="15.4" r="2.5"/></svg>',
+};
+
+function fmtTime(s) {
+  if (!isFinite(s) || s < 0) return '0:00';
+  s = Math.floor(s);
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+
+function mpLabel(e) {
+  const t = tagOf(e);
+  const L = {
+    title: (t && t.title) || e.name,
+    artist: (t && t.artist) || '',
+    album: (t && t.album) || '',
+  };
+  // 没标签时把扩展名去掉当标题，比「夜间飞行.mp3」清爽
+  if (!t || !t.title) L.title = e.name.replace(/\.[^.]+$/, '');
+  return L;
+}
+
+function mountAudio(e) {
+  const list = sortEntries(S.entries).filter((x) => x.kind === 'audio');
+  MP.on = true;
+  MP.root = S.root;
+  MP.dir = S.path;
+  MP.list = list;
+  MP.i = Math.max(0, list.findIndex((x) => x.path === e.path));
+  MP.seq = list.map((_, i) => i);   // 默认顺序播放
+  MP.pos = MP.i;
+  MP.shuffle = false;
+  // 随机/循环是「听歌习惯」，记在浏览器本地 —— 每次打开都回到关着的状态很烦人。
+  // 恢复随机要重洗序列（当前曲固定第一），逻辑跟点按钮完全一致
+  MP.repeat = Math.min(2, Math.max(0, parseInt(localStorage.getItem('mp_repeat'), 10) || 0));
+  if (localStorage.getItem('mp_shuffle') === '1') { MP.shuffle = true; mpShuffleSeq(); }
+  MP.played = {};   // 新的一次播放会话：这本账只在「这次打开播放器」期间有效
+  MP.lyric = [];
+  MP.lyIdx = -1;
+  MP.lyricTried = false;
+  MP.lyricToken = 0;
+  MP.qOpen = false;
+
+  // 版面照网易云的播放页来：
+  //   上  —— 左边一张转着的黑胶，右边歌词逐行高亮；
+  //   下  —— 一条常驻播放条（进度 / 三键 / 歌名），队列收进右侧抽屉。
+  // 队列不再常年占着中间：一个目录几十首歌时它会把「正在听什么」挤没，
+  // 而想翻下一首听什么，点一下列表按钮就够。
+  $('viewerBody').innerHTML =
+    '<div class="mp" id="mpRoot">' +
+      '<div class="mp-bg"><div class="mp-bg-img" id="mpBgImg"></div></div>' +
+      '<div class="mp-stage">' +
+        '<div class="mp-disc">' +
+          '<div class="mp-disc-in">' +
+            '<img class="mp-cover" id="mpCover" alt="">' +
+            '<div class="mp-cover-ph">' + MP_ICON.note + '</div>' +
+            '<span class="mp-hole"></span>' +
+          '</div>' +
+          '<div class="mp-arm"><i></i></div>' +
+        '</div>' +
+        '<div class="mp-lyric" id="mpLyric"><div class="mp-lyric-inner" id="mpLyricInner"></div></div>' +
+      '</div>' +
+      '<div class="mp-foot">' +
+        // 进度条横跨整条底栏，时间贴在两端 —— 跟音乐 App 的底栏一致
+        '<div class="mp-prog">' +
+          '<span class="mp-t" id="mpCur">0:00</span>' +
+          '<input class="mp-seek" id="mpSeek" type="range" min="0" max="1000" value="0" step="1" aria-label="播放进度">' +
+          '<span class="mp-t" id="mpDur">--:--</span>' +
+        '</div>' +
+        '<div class="mp-ctl">' +
+          '<div class="mp-now">' +
+            '<div class="mp-mini"><img id="mpMini" alt=""><i>' + MP_ICON.note + '</i></div>' +
+            '<div class="mp-info">' +
+              '<div class="mp-title" id="mpTitle"></div>' +
+              '<div class="mp-sub" id="mpSub"></div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="mp-btns">' +
+            '<button class="mp-btn" id="mpPrev" title="上一首">' + MP_ICON.prev + '</button>' +
+            '<button class="mp-btn primary" id="mpPlay" title="播放">' + MP_ICON.play + '</button>' +
+            '<button class="mp-btn" id="mpNext" title="下一首">' + MP_ICON.next + '</button>' +
+          '</div>' +
+          '<div class="mp-right">' +
+            '<button class="mp-mode" id="mpLoop" title="顺序播放">' + MP_ICON.loop + '</button>' +
+            '<button class="mp-mode" id="mpShuffle" title="随机播放：关">' + MP_ICON.shuffle + '</button>' +
+            '<button class="mp-mode" id="mpQueueBtn" title="播放列表">' + MP_ICON.list + '</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+      '<aside class="mp-qpane" id="mpQpane">' +
+        '<div class="mp-qhead">播放列表 <span class="mp-qn" id="mpQn"></span></div>' +
+        '<div class="mp-queue" id="mpQueue"></div>' +
+      '</aside>' +
+      '<div class="mp-qmask" id="mpQmask"></div>' +
+      // 音频元素本身不出声也不露面，只当解码器用
+      '<audio id="mpAudio" preload="metadata"></audio>' +
+    '</div>';
+
+  MP.el = $('mpAudio');
+  MP.seeking = false;
+  $('mpPrev').addEventListener('click', () => mpStep(-1));
+  $('mpNext').addEventListener('click', () => mpStep(1));
+  $('mpShuffle').addEventListener('click', mpToggleShuffle);
+  $('mpLoop').addEventListener('click', mpToggleLoop);
+  $('mpQueueBtn').addEventListener('click', () => mpToggleQueue());
+  $('mpQmask').addEventListener('click', () => mpToggleQueue(false));
+  $('mpPlay').addEventListener('click', () => {
+    if (!MP.el) return;
+    if (MP.el.paused) MP.el.play().catch(() => {});
+    else MP.el.pause();
+  });
+  // 播完自动接下一首：这是「连播」的全部实现，剩下交给浏览器
+  MP.el.addEventListener('ended', () => {
+    // 单曲循环：这首重放这首。不整走 mpPlay —— 同一首歌，标签/歌词/列表都不用动，
+    // 也不用再问一次服务端进度，回零接着唱就完了
+    if (MP.repeat === 2) { MP.el.currentTime = 0; MP.el.play().catch(() => {}); return; }
+    if (MP.pos + 1 < MP.seq.length) { mpStep(1); return; }   // 播完自动接下一首（随机模式下就是序列里的下一首）
+    if (MP.repeat === 1) {
+      // 列表循环：序列走完绕回开头再来一遍 —— 随机模式下绕回的是洗牌后的第一首，
+      // 不是重新洗牌（重新洗牌等于换了一个顺序，跟「循环」这个词对不上）
+      mpSave(false);
+      MP.pos = 0;
+      MP.i = MP.seq[0];
+      mpPlay();
+      return;
+    }
+    mpSave(true);   // 最后一首放完，把进度清零，下次从头上听
+  });
+  MP.el.addEventListener('loadedmetadata', () => { mpRestore(); mpSeekSync(); });
+  MP.el.addEventListener('timeupdate', () => {
+    // 关掉播放器的瞬间元素还会甩出最后一两个 timeupdate，那时 MP.el 已经被置空 ——
+    // 不挡的话控制台会冒一条 null.currentTime，看着像播放器炸了
+    if (!MP.el) return;
+    const t = MP.el.currentTime;
+    mpTick(); mpSeekSync(); mpSyncLyric(t);
+  });
+  MP.el.addEventListener('play', mpPaintBtn);
+  MP.el.addEventListener('pause', () => { mpPaintBtn(); mpSave(false); });
+  // 拖动中只更新「已播时间」的显示，松手才真 seek —— 每动一像素就 seek 一次
+  // 会把播放位置反复打断，播客/长音频上听起来就是卡顿
+  $('mpSeek').addEventListener('input', () => {
+    MP.seeking = true;
+    const p = +$('mpSeek').value / 1000;
+    $('mpSeek').style.setProperty('--p', (p * 100).toFixed(2) + '%');
+    $('mpCur').textContent = fmtTime(p * (MP.el && isFinite(MP.el.duration) ? MP.el.duration : 0));
+  });
+  $('mpSeek').addEventListener('change', () => {
+    const p = +$('mpSeek').value / 1000;
+    if (MP.el && isFinite(MP.el.duration)) MP.el.currentTime = p * MP.el.duration;
+    MP.seeking = false;
+  });
+
+  mpRender();
+  mpPlay();
+  hookMediaSession();
+}
+
+// 窗口尺寸变了，歌词居中的那点内边距要重算，否则切到横屏后整列歌词会偏上/偏下
+let mpResizeTimer = 0;
+window.addEventListener('resize', () => {
+  if (!MP.on) return;
+  clearTimeout(mpResizeTimer);
+  mpResizeTimer = setTimeout(() => { mpPadLyric(); mpSyncLyric(MP.el ? MP.el.currentTime : 0, true); }, 120);
+});
+
+function mpPaintBtn() {
+  const b = $('mpPlay');
+  if (!b) return;
+  const playing = MP.el && !MP.el.paused;
+  b.innerHTML = playing ? MP_ICON.pause : MP_ICON.play;
+  b.title = playing ? '暂停' : '播放';
+  // 唱片转不转、唱针落不落在盘上，都只看这一个类
+  const r = $('mpRoot');
+  if (r) r.classList.toggle('playing', !!playing);
+}
+
+// 把当前播放位置同步到进度条与时间标签
+function mpSeekSync() {
+  const a = MP.el, sk = $('mpSeek');
+  if (!a || !sk) return;
+  const d = a.duration;
+  const ok = isFinite(d) && d > 0;
+  if (!MP.seeking) {
+    const p = ok ? a.currentTime / d : 0;
+    sk.value = String(Math.round(p * 1000));
+    sk.style.setProperty('--p', (p * 100).toFixed(2) + '%');
+    $('mpCur').textContent = fmtTime(a.currentTime);
+  }
+  $('mpDur').textContent = ok ? fmtTime(d) : '--:--';
+}
+
+// ---------- 封面 / 歌词 ----------
+// 两样都走独立接口：只有真播到这一首才去拉，列表里一个字节都不带（跟 thumb 一个道理）。
+
+function mpCoverURL(e) {
+  return '/api/fs/cover?' + q(MP.root, e.path);
+}
+
+function mpTrackArt(e) {
+  const url = mpCoverURL(e);
+  const root = $('mpRoot'), bg = $('mpBgImg'), cov = $('mpCover'), mini = $('mpMini');
+  if (!root) return;
+  // 先摘掉上一首的脸，等新图 onload 了再贴 —— 否则封面慢半秒时，
+  // 唱片上会挂着上一首的封面在转
+  root.classList.remove('has-art');
+  [bg, cov, mini].forEach((n) => n && n.classList.remove('on'));
+  const probe = new Image();
+  probe.onload = () => {
+    if (MP.list[MP.i] !== e) return;   // 加载期间已经切歌，别把旧图贴到新歌上
+    if (bg) bg.style.backgroundImage = 'url("' + url + '")';
+    [cov, mini].forEach((n) => { if (n) { n.src = url; n.classList.add('on'); } });
+    if (bg) bg.classList.add('on');
+    root.classList.add('has-art');
+  };
+  probe.onerror = () => {
+    if (MP.list[MP.i] !== e) return;
+    if (bg) { bg.style.backgroundImage = ''; bg.classList.remove('on'); }
+    [cov, mini].forEach((n) => { if (n) { n.removeAttribute('src'); n.classList.remove('on'); } });
+    root.classList.remove('has-art');
+  };
+  probe.src = url;
+}
+
+async function mpLoadLyric(e) {
+  const token = ++MP.lyricToken;
+  MP.lyric = [];
+  MP.lyIdx = -1;
+  MP.lyricTried = false;
+  mpRenderLyric();
+  try {
+    const r = await api('/api/fs/lyrics?' + q(MP.root, e.path));
+    if (token !== MP.lyricToken || MP.list[MP.i] !== e) return;   // 期间切歌了，这份歌词作废
+    MP.lyricTried = true;
+    const raw = (r && r.data && r.data.lrc) || '';
+    MP.lyric = raw ? mpParseLRC(raw) : [];
+  } catch (err) {
+    if (token !== MP.lyricToken) return;
+    MP.lyricTried = true;
+    MP.lyric = [];
+  }
+  mpRenderLyric();
+}
+
+// LRC 解析。行首可以连着挂好几个时间标签（副歌那句被复用的情况），
+// 一个标签产出一行 —— 到点了各自高亮。
+function mpParseLRC(text) {
+  const out = [];
+  const plain = [];
+  const re = /\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g;
+  const isMeta = /^\[(ti|ar|al|by|offset|length|re|ve|tool|encoding|kana)\s*:/i;
+  String(text).replace(/^\uFEFF/, '').split(/\r?\n/).forEach((raw) => {
+    const line = raw.trim();
+    if (!line) return;
+    const times = [];
+    let end = 0, m;
+    re.lastIndex = 0;
+    while ((m = re.exec(line))) {
+      if (m.index !== end) break;   // 时间标签必须顶格连着出现，句中的 [..] 不算
+      const frac = m[3] || '';
+      const ms = frac ? +(frac + '00').slice(0, 3) : 0;
+      times.push(+m[1] * 60 + +m[2] + ms / 1000);
+      end = re.lastIndex;
+    }
+    const s = line.slice(end).trim();
+    if (!times.length) {
+      // 整个文件都没时间标签的（内嵌 USLT 大多如此）也别丢，退化成静态文字
+      if (!isMeta.test(line)) plain.push(line);
+      return;
+    }
+    if (!s) return;
+    times.forEach((t) => out.push({ t, s }));
+  });
+  if (!out.length) return plain.map((s) => ({ t: -1, s }));
+  out.sort((a, b) => a.t - b.t);
+  return out;
+}
+
+function mpRenderLyric() {
+  const box = $('mpLyric'), inner = $('mpLyricInner');
+  if (!box || !inner) return;
+  const e = MP.list[MP.i];
+  inner.innerHTML = '';
+  inner.style.paddingTop = '';
+  inner.style.paddingBottom = '';
+  if (!e || !MP.lyric.length) {
+    box.classList.add('empty');
+    box.scrollTop = 0;
+    if (e) {
+      const L = mpLabel(e);
+      const sub = [L.artist, L.album].filter(Boolean).join(' · ');
+      inner.innerHTML =
+        '<div class="mp-empty">' +
+          '<div class="mp-empty-t">' + esc(L.title) + '</div>' +
+          (sub ? '<div class="mp-empty-s">' + esc(sub) + '</div>' : '') +
+          '<div class="mp-empty-h">' + (MP.lyricTried ? '暂无歌词' : '正在找歌词…') + '</div>' +
+        '</div>';
+    }
+    return;
+  }
+  box.classList.remove('empty');
+  const frag = document.createDocumentFragment();
+  MP.lyric.forEach((ln) => {
+    const d = document.createElement('div');
+    d.className = 'mp-ly' + (ln.t < 0 ? ' plain' : '');
+    d.textContent = ln.s;
+    if (ln.t >= 0) {
+      // 点哪句从哪句开始唱 —— 长前奏 / 找某一段时比拖进度条准
+      d.addEventListener('click', () => { if (MP.el) MP.el.currentTime = ln.t; });
+    }
+    frag.appendChild(d);
+  });
+  inner.appendChild(frag);
+  MP.lyIdx = -1;
+  mpPadLyric();
+  mpSyncLyric(MP.el ? MP.el.currentTime : 0, true);
+}
+
+// 上下各留半屏内边距，第一句和最后一句也能停在正中（不然滚动到头就卡在底部）
+function mpPadLyric() {
+  const box = $('mpLyric'), inner = $('mpLyricInner');
+  if (!box || !inner) return;
+  if (!MP.lyric.length || box.classList.contains('empty')) return;
+  const pad = Math.max(10, Math.round(box.clientHeight / 2 - 24));
+  inner.style.paddingTop = pad + 'px';
+  inner.style.paddingBottom = pad + 'px';
+}
+
+function mpSyncLyric(t, force) {
+  if (!MP.lyric.length || !MP.lyric[0] || MP.lyric[0].t < 0) return;   // 无时间轴，不跟着走
+  let idx = -1;
+  for (let i = 0; i < MP.lyric.length; i++) {
+    if (MP.lyric[i].t > t + 0.2) break;
+    idx = i;
+  }
+  if (idx === MP.lyIdx && !force) return;
+  const box = $('mpLyric'), inner = $('mpLyricInner');
+  if (!box || !inner) return;
+  const all = inner.children;
+  if (MP.lyIdx >= 0 && all[MP.lyIdx]) all[MP.lyIdx].classList.remove('on');
+  MP.lyIdx = idx;
+  if (idx < 0) { box.scrollTo({ top: 0, behavior: force ? 'auto' : 'smooth' }); return; }
+  const el = all[idx];
+  if (!el) return;
+  el.classList.add('on');
+  const top = el.offsetTop - (box.clientHeight - el.offsetHeight) / 2;
+  box.scrollTo({ top: Math.max(0, top), behavior: force ? 'auto' : 'smooth' });
+}
+
+function mpToggleQueue(on) {
+  MP.qOpen = on === undefined ? !MP.qOpen : !!on;
+  const r = $('mpRoot');
+  if (r) r.classList.toggle('q-open', MP.qOpen);
+  if (!MP.qOpen) return;
+  const q = $('mpQueue');
+  const cur = q && q.querySelector('.mp-item.on');
+  if (cur && q) q.scrollTop = Math.max(0, cur.offsetTop - q.clientHeight / 2);
+}
+
+function mpPlay() {
+  const e = MP.list[MP.i];
+  if (!e || !MP.el) return;
+  // 收藏星、「刚点开」、进度条都跟着当前这一首走 —— viewerEntry 是它们的唯一来源
+  viewerEntry = e;
+  const L = mpLabel(e);
+  $('viewerName').textContent = L.title;
+  syncViewerFav();
+  // 只有「这次打开播放器后第一次放到这首」才允许续播。
+  // 听到一半切走、又切回来 —— 那是重新点开一首歌，从头上唱，
+  // 不能拿服务端记着的旧位置把人拽回中间。
+  MP.allowRestore = !MP.played[e.path];
+  MP.played[e.path] = 1;
+  MP.el.src = '/api/fs/download?' + q(MP.root, e.path) + '&inline=1';
+  // 换歌时先把进度条归零、时长清空，等 loadedmetadata 到了再填真值 ——
+  // 不重置的话切歌瞬间会看到上一首的时长和新歌的进度条位置对不上
+  const sk = $('mpSeek');
+  if (sk) { sk.value = '0'; sk.style.setProperty('--p', '0%'); }
+  if ($('mpCur')) $('mpCur').textContent = '0:00';
+  if ($('mpDur')) $('mpDur').textContent = '--:--';
+  const p = MP.el.play();
+  if (p && p.catch) p.catch(() => {});   // 浏览器拦自动播放时不报红，用户可以点控件
+  mpPaintBtn();
+  mpTrackArt(e);
+  mpLoadLyric(e);
+  mpRender();
+  mpMediaMeta(L);
+}
+
+function mpStep(d) {
+  let n = MP.pos + d;
+  if (d < 0 && n < 0) { if (MP.el) MP.el.currentTime = 0; return; }   // 第一首按「上一个」= 重头放
+  if (d > 0 && n >= MP.seq.length) {
+    if (!MP.repeat) return;   // 顺序模式，走到末尾就停
+    n = 0;                  // 开了循环，手动按「下一首」也绕回开头
+  }
+  mpSave(false);   // 离开当前曲目前先落一次进度
+  MP.pos = n;
+  MP.i = MP.seq[n];
+  mpPlay();
+}
+
+// 随机：把「除当前这首以外」的索引洗一遍，当前这首永远排第一 ——
+// 不然一点随机，正在听的歌会被换掉，很突兀
+// 洗牌：把「除当前这首以外」的索引洗一遍，当前这首永远排第一 ——
+// 不然一点随机，正在听的歌会被换掉，很突兀
+function mpShuffleSeq() {
+  const rest = MP.seq.filter((i) => i !== MP.i);
+  for (let i = rest.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [rest[i], rest[j]] = [rest[j], rest[i]];
+  }
+  MP.seq = [MP.i, ...rest];
+  MP.pos = 0;
+}
+
+function mpToggleShuffle() {
+  MP.shuffle = !MP.shuffle;
+  if (MP.shuffle) {
+    mpShuffleSeq();
+  } else {
+    // 关掉随机：回到目录原顺序，并定位到当前正在听的这一首，
+    // 不能简单回到 0，否则下一首会跑到别的歌手上
+    MP.seq = MP.list.map((_, i) => i);
+    MP.pos = MP.i;
+  }
+  localStorage.setItem('mp_shuffle', MP.shuffle ? '1' : '0');
+  mpRender();
+  toast(MP.shuffle ? '随机播放' : '顺序播放');
+}
+
+// 循环按钮：顺序 → 列表循环 → 单曲循环 → 顺序，三态轮换（跟网易云一个路子）
+const MP_REPEAT_NAME = ['顺序播放', '列表循环', '单曲循环'];
+function mpToggleLoop() {
+  MP.repeat = (MP.repeat + 1) % 3;
+  localStorage.setItem('mp_repeat', String(MP.repeat));
+  mpRender();   // 图标要换成带 1 的那个，置灰状态也跟着变
+  toast(MP_REPEAT_NAME[MP.repeat]);
+}
+
+let mpLastSave = 0;
+function mpTick() {
+  const now = Date.now();
+  if (now - mpLastSave < 10000) return;   // 音乐动辄三五分钟，10 秒一次足够
+  mpLastSave = now;
+  mpSave(false);
+}
+
+function mpSave(reset) {
+  const e = MP.list[MP.i];
+  if (!e || !MP.el) return;
+  if (reset) {
+    api('/api/fs/progress', { root: MP.root, path: e.path, pos: 0, dur: 0 }).catch(() => {});
+    return;
+  }
+  const d = MP.el.duration;
+  const pos = MP.el.currentTime;
+  // 一分钟以内的不记（跟视频那套判据一致），免得列表里全是「上次听到 0:12」
+  if (!isFinite(d) || d < 60 || !isFinite(pos) || pos <= 0) return;
+  api('/api/fs/progress', {
+    root: MP.root, path: e.path,
+    pos: Math.floor(pos), dur: Math.floor(d),
+  }).catch(() => {});
+}
+
+async function mpRestore() {
+  // 同一次会话里切回来的歌，从头放 —— 用户的原话是「切歌了进度就不存在，
+  // 只有退出去再回来那种才该接着放」
+  if (!MP.allowRestore) return;
+  const e = MP.list[MP.i];
+  if (!e || !MP.el || !isFinite(MP.el.duration) || MP.el.duration < 60) return;
+  try {
+    const r = await api('/api/fs/progress?' + q(MP.root, e.path));
+    // 拉回来的时候可能已经切歌了，别把 A 的位置跳到 B 上
+    if (r.code !== 0 || !r.data || MP.list[MP.i] !== e) return;
+    const pos = +r.data.pos || 0;
+    // 结尾 15 秒内不续播：基本等于听完了，再跳到尾巴上没意义
+    if (pos > 20 && pos < MP.el.duration - 15) {
+      MP.el.currentTime = pos;
+      mpSyncLyric(pos, true);
+      toast('从上次听到的地方继续');
+    }
+  } catch (err) { /* 拉不到就从头放，对用户无感 */ }
+}
+
+function mpRender() {
+  if (!MP.on) return;
+  const e = MP.list[MP.i];
+  if (!e) return;
+  const L = mpLabel(e);
+  const tEl = $('mpTitle');
+  if (tEl) {
+    tEl.textContent = L.title;
+    tEl.title = e.name;
+    $('mpSub').textContent = [L.artist, L.album].filter(Boolean).join(' · ') || '未知歌手';
+  }
+  const q = $('mpQueue');
+  if (q) {
+    // 只在「条目数变了」时重建：切歌只挪高亮。
+    // 每次都重建的话，抽屉里刚滚到的位置会被打回顶部，翻到一半就跳走。
+    if (q.childElementCount !== MP.list.length) {
+      q.innerHTML = '';
+      MP.list.forEach((x, i) => {
+        const it = document.createElement('div');
+        it.className = 'mp-item';
+        const t = mpLabel(x);
+        // 序号和「跳动的小竖条」都常驻，用 CSS 按 .on 决定露哪一个 —— 这样切歌只改类名
+        it.innerHTML =
+          '<span class="mp-i"><b class="mp-eq"><i></i><i></i><i></i></b><em>' + (i + 1) + '</em></span>' +
+          '<span class="mp-n">' + esc(t.title) + '</span>' +
+          '<span class="mp-a">' + esc(t.artist) + '</span>';
+        it.title = x.name;
+        it.addEventListener('click', () => {
+          if (i === MP.i) return;
+          mpSave(false);
+          MP.i = i;
+          MP.pos = MP.seq.indexOf(i);   // 随机模式下点列表也要把播放序列的位置对齐
+          mpPlay();
+        });
+        q.appendChild(it);
+      });
+    }
+    [...q.children].forEach((it, i) => it.classList.toggle('on', i === MP.i));
+    if (MP.qOpen) {
+      const cur = q.querySelector('.mp-item.on');
+      if (cur) q.scrollTop = Math.max(0, cur.offsetTop - q.clientHeight / 2);
+    }
+  }
+  const qn = $('mpQn');
+  if (qn) qn.textContent = '(' + MP.list.length + ')';
+  // 到头就置灰：让人知道「已经是最前/最后」，而不是点了没反应。
+  // 随机模式下按播放序列算边界，不是按列表顺序
+  const pv = $('mpPrev'), nx = $('mpNext');
+  // 循环（列表或单曲）开着时首/尾都能绕过去，按钮永远可点
+  if (pv) pv.disabled = MP.pos <= 0 && !MP.repeat;
+  if (nx) nx.disabled = MP.pos >= MP.seq.length - 1 && !MP.repeat;
+  const sh = $('mpShuffle');
+  if (sh) {
+    sh.classList.toggle('on', MP.shuffle);
+    sh.title = MP.shuffle ? '随机播放：开' : '随机播放：关';
+  }
+  const lp = $('mpLoop');
+  if (lp) {
+    lp.classList.toggle('on', MP.repeat > 0);
+    lp.innerHTML = MP.repeat === 2 ? MP_ICON.loopOne : MP_ICON.loop;
+    lp.title = MP_REPEAT_NAME[MP.repeat];
+  }
+}
+
+// MediaSession：锁屏 / 系统媒体浮层 / 键盘媒体键。桌面也有用 ——
+// Chrome 的标签页会显示歌名，Windows 音量浮层能直接暂停切歌。
+let mpMsHooked = false;
+function mpMediaMeta(L) {
+  if (!('mediaSession' in navigator) || !window.MediaMetadata) return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: L.title, artist: L.artist, album: L.album,
+    });
+  } catch (err) { /* 老浏览器没有 MediaMetadata，忽略 */ }
+}
+
+function hookMediaSession() {
+  if (mpMsHooked || !('mediaSession' in navigator)) return;
+  mpMsHooked = true;
+  const set = (a, fn) => { try { navigator.mediaSession.setActionHandler(a, fn); } catch (e) {} };
+  set('play', () => { if (MP.el) MP.el.play().catch(() => {}); });
+  set('pause', () => { if (MP.el) MP.el.pause(); });
+  set('previoustrack', () => mpStep(-1));
+  set('nexttrack', () => mpStep(1));
+  set('seekbackward', (d) => { if (MP.el) MP.el.currentTime = Math.max(0, MP.el.currentTime - (d.seekOffset || 10)); });
+  set('seekforward', (d) => { if (MP.el) MP.el.currentTime = Math.min(MP.el.duration || 0, MP.el.currentTime + (d.seekOffset || 10)); });
+  set('seekto', (d) => { if (MP.el && d.seekTime != null) MP.el.currentTime = d.seekTime; });
 }
 
 // ---------- 文本预览 ----------
@@ -1496,6 +2176,12 @@ function closeViewer() {
   rotManual = false;
   $('viewerRot').classList.remove('on');
   saveCurrentProgress();   // 关掉播放器前把进度存一下，下次接着看
+  // 音乐队列要一起收掉：否则关掉弹层后 ended 回调还挂在旧 audio 上，
+  // 下次打开别的歌会「上一首的队列」接着往下唱
+  if (MP.on) {
+    mpSave(false);
+    MP.on = false; MP.list = []; MP.i = -1; MP.el = null;
+  }
   const body = $('viewerBody');
   // 先把 src 摘掉再清 DOM：网络流不会自己断，不主动断的话服务端的 ffmpeg 会一直转下去
   body.querySelectorAll('video, audio').forEach((m) => {
@@ -2999,14 +3685,47 @@ async function boot() {
   clog('文件页加载 standalone=' + (window.navigator.standalone ? 1 : 0) +
     ' dpr=' + (window.devicePixelRatio || 1) + ' w=' + window.innerWidth);
   try {
-    await loadRoots();
-    await loadFavs();      // 先拿一次收藏，列表里的 ★ 才不会漏画
-    // 「刚点开」标记：开机先取一次（刷新页面/换设备都能把标记带回来）
-    try {
-      const lo = await api('/api/fs/lastopen');
-      if (lo && lo.data && lo.data.path) S.lastOpen = lo.data;
-    } catch (e2) {}
-    if (S.root) await loadList();
+    // 四个小请求一次并发：串行的话（roots→fav→lastopen→lastdir）要排四个来回，
+    // 列表迟迟不出来，页面上先空着一块，视觉上也是「闪」。谁失败都各自兜底，不互相拖死。
+    const [ , , lo, ld] = await Promise.all([
+      loadRoots(),
+      loadFavs(),   // 先拿一次收藏，列表里的 ★ 才不会漏画
+      // 「刚点开」标记：开机先取一次（刷新页面/换设备都能把标记带回来）
+      api('/api/fs/lastopen').catch(() => null),
+      // 上次浏览的目录：直接回到原地，不用一层层重新点进去。
+      api('/api/fs/lastdir').catch(() => null),
+    ]);
+    if (lo && lo.data && lo.data.path) S.lastOpen = lo.data;
+    // 权限是按当前登录态算的 —— 后台把盘/白名单目录收走后这里恢复不了，
+    // 就回默认根，并把那条已失效的记录清掉（不然下次还是先撞一次墙）。
+    let lastDir = (ld && ld.data && ld.data.root) ? ld.data : null;
+    if (lastDir && !S.roots.some((x) => x.path === lastDir.root)) {
+      lastDir = null;   // 整个盘 / 白名单目录都不在列表里了，记录已无意义
+      api('/api/fs/lastdir', { root: '', path: '' }).catch(() => {});
+    }
+    if (lastDir) {
+      const rt = S.roots.find((x) => x.path === lastDir.root);
+      S.root = rt.path;
+      S.rootName = rt.name;
+      S.rootDrive = rt.drive || '';
+      S.path = lastDir.path || '';
+    }
+    // 到这里「选哪个根」已经定了，根栏只画这一次 —— 这是消掉刷新闪烁的关键
+    renderRoots();
+    if (S.root) {
+      const code = await loadList();
+      if (code !== 0 && lastDir) {
+        // 只在「确实没权限 / 目录没了」时清记录；服务端抽风（500 等）别把人家的位置弄丢
+        if (code === 403 || code === 404) api('/api/fs/lastdir', { root: '', path: '' }).catch(() => {});
+        S.root = S.roots[0].path;
+        S.rootName = S.roots[0].name;
+        S.rootDrive = S.roots[0].drive || '';
+        S.path = '';
+        renderRoots();
+        await loadList();
+        toast('上次的位置已失效，回到默认目录');
+      }
+    }
   } catch (e) {
     if (e.message !== '未登录') toast(e.message);
   }

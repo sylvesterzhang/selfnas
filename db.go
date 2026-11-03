@@ -104,6 +104,13 @@ func migrateDB() error {
 			ts       INTEGER NOT NULL,
 			PRIMARY KEY (username)
 		)`,
+		`CREATE TABLE IF NOT EXISTS lastdir (
+			username TEXT NOT NULL,
+			root     TEXT NOT NULL,
+			path     TEXT NOT NULL,
+			ts       INTEGER NOT NULL,
+			PRIMARY KEY (username)
+		)`,
 		`CREATE INDEX IF NOT EXISTS ix_recent_ts ON recent (username, ts DESC)`,
 		`CREATE INDEX IF NOT EXISTS ix_fav_ts ON favorite (username, ts DESC)`,
 	}
@@ -303,6 +310,36 @@ func setLastOpen(user, root, path, name string) error {
 		`INSERT INTO lastopen (username, root, path, name, ts) VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(username) DO UPDATE SET root = excluded.root, path = excluded.path, name = excluded.name, ts = excluded.ts`,
 		user, root, path, name, time.Now().Unix()); err != nil {
+		return err
+	}
+	flush()
+	return nil
+}
+
+// 上次浏览的目录：刷新/重开页面直接回到原地。每个账号一条（点新的覆盖旧的）。
+// 权限被收走、目录被删时前端恢复失败，会调 clearLastDir 把记录清掉，下次从默认根进。
+func getLastDir(user string) (root, path string) {
+	var r, p string
+	if err := db.QueryRow(
+		`SELECT root, path FROM lastdir WHERE username = ?`, user).Scan(&r, &p); err != nil {
+		return "", ""
+	}
+	return r, p
+}
+
+func setLastDir(user, root, path string) error {
+	if _, err := db.Exec(
+		`INSERT INTO lastdir (username, root, path, ts) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(username) DO UPDATE SET root = excluded.root, path = excluded.path, ts = excluded.ts`,
+		user, root, path, time.Now().Unix()); err != nil {
+		return err
+	}
+	flush()
+	return nil
+}
+
+func clearLastDir(user string) error {
+	if _, err := db.Exec(`DELETE FROM lastdir WHERE username = ?`, user); err != nil {
 		return err
 	}
 	flush()
