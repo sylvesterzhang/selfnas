@@ -41,6 +41,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		clearFail(ip)
 		user := scopedNormalizeUser(body.User)
+		sxEnsureScopedPassEnc(body.User, body.Pass) // 补 Subsonic 用的密封副本
 		exp := setSessionCookieAs(w, user)
 		writeJSON(w, 0, "登录成功", map[string]any{
 			"user": user,
@@ -50,11 +51,23 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clearFail(ip)
+	sxEnsureAdminPassEnc(body.Pass) // 补 Subsonic 用的密封副本（老配置升级后第一次登录就会补上）
 	exp := setSessionCookie(w)
 	writeJSON(w, 0, "登录成功", map[string]any{
 		"user": cfg.User,
 		"exp":  exp,
 		"days": cfg.SessionDays,
+	})
+}
+
+// handleWhoami /api/whoami：前端问「我是谁、是不是管理员」。
+// 管理台启动时先问这一句 —— 共享账号登进来要靠它认出身份，
+// 否则会被 guard 的 401 一路推回登录框，输一百遍也进不去。
+func handleWhoami(w http.ResponseWriter, r *http.Request) {
+	u := webUserOf(r)
+	writeJSON(w, 0, "ok", map[string]any{
+		"user":  u,
+		"admin": u == cfg.User,
 	})
 }
 
@@ -397,8 +410,11 @@ func handlePassword(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, "新密码至少 6 位", nil)
 		return
 	}
+	// sealPass 内部要读 cfg.Secret（会拿 cfgMu），必须在 Lock 之前算好
+	newEnc := sealPass(body.New)
 	cfgMu.Lock()
 	cfg.PassHash = hashPassword(body.New)
+	cfg.PassEnc = newEnc // Subsonic token 鉴权依赖这份副本，改密码必须同步
 	// SMB 的 NTLM 凭据是从明文密码算的，改密码必须同步重算，
 	// 否则手机端会一直用旧密码登录失败（2026-10-29 加入 SMB 时一并处理）。
 	if cfg.SMB.Enabled {

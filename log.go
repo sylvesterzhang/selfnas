@@ -41,7 +41,16 @@ var logH *logHub
 func initLogging(dir string) {
 	logDir = dir
 	logH = &logHub{dir: dir}
-	log.SetOutput(io.MultiWriter(os.Stdout, logH))
+	// 只在「终端里直接跑」时才同时写 stdout。被计划任务/systemd 拉起时，
+	// stdout 往往是一个没人读的管道：管道缓冲一满，Write 就永久阻塞 ——
+	// 而日志写入持有全局锁，等于整个服务跟着卡死
+	// （症状极迷惑：/files 卡十秒不返回、/assets 秒回、CPU 几乎为 0、连接一堆 CLOSE_WAIT）。
+	// 文件日志本来就有、管理台也能看，终端以外的场景没必要再往 stdout 吐一份。
+	var out io.Writer = logH
+	if st, err := os.Stdout.Stat(); err == nil && st.Mode()&os.ModeCharDevice != 0 {
+		out = io.MultiWriter(os.Stdout, logH)
+	}
+	log.SetOutput(out)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	_ = os.MkdirAll(dir, 0o755)
 	log.Printf("[启动] selfnas %s 启动，日志目录 %s", version, dir)
@@ -56,8 +65,11 @@ func (h *logHub) Write(p []byte) (int, error) {
 		h.rotate(day)
 	}
 	if h.f != nil {
+		// 故意不调 Sync：访问日志是每个请求一条，逐条 fsync 等于让每个请求都等一次
+		// 磁盘同步；而且这里持着 h.mu，磁盘一慢就是全站请求排队卡死（实测 /files
+		// 10 秒不返回、/assets 秒回造成"服务半死"的错觉、进程 CPU 近 0、连接一堆
+		// CLOSE_WAIT）。日志丢最后几行完全可接受，别拿可用性换它。
 		_, _ = h.f.Write(p)
-		_ = h.f.Sync() // 崩溃/断电也不丢最后几行，代价可接受（日志量很小）
 	}
 	for _, ln := range strings.Split(strings.TrimRight(string(p), "\r\n"), "\n") {
 		if strings.TrimSpace(ln) == "" {

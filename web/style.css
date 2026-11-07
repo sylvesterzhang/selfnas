@@ -179,6 +179,50 @@ html[data-theme="pink"] {
   --danger-soft: #fcebeb;
 }
 
+/* NAS 设备风：像一台机器的控制面板，而不是网盘/工具站。
+   布局一律不动，只换视觉语言：深色侧栏当机壳、设备蓝当主色、
+   小圆角硬边、表头压深、容量与路径走等宽数字。 */
+html[data-theme="nas"] {
+  --bg: #eef2f6;
+  --surface: #ffffff;
+  --surface-2: #f2f6fa;
+  --text: #16202b;
+  --text-2: #4c5c6c;
+  --text-3: #7d8c9b;
+  --border: rgba(18, 42, 68, 0.15);
+  --accent: #0a6ed1;
+  --accent-soft: #e6f1fd;
+  --accent-line: #b4d1f2;
+  --ok: #1c7c54;
+  --ok-soft: #e6f5ee;
+  --ok-line: #a9dcc6;
+  --warn: #8a5a00;
+  --warn-soft: #fdf3e0;
+  --danger: #b3261e;
+  --danger-soft: #fdecea;
+  --radius: 6px;
+}
+
+/* 侧栏压深＝机壳。选中项左侧一条蓝指示条，是设备面板的惯用语言 */
+html[data-theme="nas"] .side { background: #0f2438; border-right: 0; }
+html[data-theme="nas"] .brandmark { color: #92a8bf; }
+html[data-theme="nas"] .brandmark b { color: #64b0f7; }
+html[data-theme="nas"] .brand small { color: #7a92a9; }
+html[data-theme="nas"] .nav button { color: #b7c8d9; border-radius: 4px; }
+html[data-theme="nas"] .nav button:hover { background: #17304a; color: #eef5fc; }
+html[data-theme="nas"] .nav button.active { background: #14304c; color: #fff; box-shadow: inset 3px 0 0 #3f9bfa; }
+
+/* 根目录芯片：药丸 → 方形设备标签 —— 已全局化（.chip 基础样式就是方角），
+   这里不再需要覆盖。表头压深、行悬停淡蓝是配色，留在主题里。 */
+html[data-theme="nas"] th { background: #eaf0f6; color: #45566a; letter-spacing: .01em; }
+html[data-theme="nas"] tbody tr:hover td { background: #f6f9fc; }
+html[data-theme="nas"] td.mono, html[data-theme="nas"] .mono { font-variant-numeric: tabular-nums; color: #3d4d5d; }
+/* 顶栏通栏白底、列表面板、方形按钮、容量条：这些是结构，已全部上移到基础样式
+   （所有主题共用，主题只换配色变量）。这里只留 nas 自己的颜色。
+   modal 圆角收小也是这个主题的观感选择，保留。 */
+html[data-theme="nas"] .modal { border-radius: 8px; }
+
+
 * { box-sizing: border-box; }
 
 body {
@@ -271,6 +315,8 @@ td.mono, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-siz
 button.btn, .btn {
   font-family: inherit; font-size: 13px; padding: 8px 14px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer;
+  /* 表格里按钮只给了 70px 的列宽，「移除」两个字会被折成两行（字竖着排），很难看 */
+  white-space: nowrap;
 }
 .btn:hover { border-color: var(--text-3); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -343,6 +389,17 @@ button.btn, .btn {
 .login-box p.sub { margin: 0 0 20px; font-size: 12px; color: var(--text-2); }
 .login-box .btn { width: 100%; margin-top: 6px; }
 
+/* 共享账号误入管理台：整页说明，不给他看空面板和「未登录」提示 */
+#notAdmin {
+  position: fixed; inset: 0; background: var(--bg); display: none;
+  align-items: center; justify-content: center; z-index: 100; padding: 20px;
+}
+#notAdmin.on { display: flex; }
+.na-box { width: 400px; max-width: 100%; }
+.na-text { font-size: 13px; line-height: 1.7; color: var(--text-2); margin: 0 0 12px; }
+.na-actions { display: flex; gap: 8px; margin-top: 18px; }
+.na-actions .btn { flex: 1; margin-top: 0; text-align: center; text-decoration: none; box-sizing: border-box; }
+
 .toast {
   /* 手机端底部已经被「上传队列」和操作条占满，提示改到顶部，别挡住「上传文件」按钮 */
   position: fixed; left: 50%; transform: translateX(-50%);
@@ -375,8 +432,25 @@ td.cap { white-space: nowrap; }
 
 .fs-head {
   display: flex; align-items: center; flex-wrap: wrap; gap: 9px;
-  padding: calc(10px + env(safe-area-inset-top)) 16px 9px;
-  background: var(--bg); position: sticky; top: 0; z-index: 10;
+  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 10;
+}
+/* 顶栏做成通栏工具栏（surface 底 + 下边线），和内容区拉开层次 —— 所有主题共用这个结构。
+   手机端 .fs-head 本来就是全宽的；桌面端它是 1040px 居中，直接给背景只会铺出中间一条，
+   所以桌面端用伪元素横向拉满（见下方媒体查询）。
+   伪元素写成「中心对齐 + 100vw 宽」而不是 left/right 各 -50vw 的全出血：
+   全出血会向两侧各溢出 50vw，Chromium 的视口裁切拦不住，手机能横滑出 195px 空白；
+   100vw 中心对齐在无滚动条时正好铺满视口、零溢出，桌面端只多出一条滚动条的宽度
+   （由 html 的 overflow-x: clip 兜底裁掉）。 */
+html { overflow-x: clip; }
+@media (min-width: 768px) {
+  .fs-head { padding-top: 15px; padding-bottom: 15px; }
+  .fs-head::before {
+    content: ''; position: absolute; z-index: -1; top: 0; bottom: 0;
+    left: 50%; width: 100vw; transform: translateX(-50%);
+    background: var(--surface); border-bottom: 1px solid var(--border);
+  }
 }
 /* 原来这里有个 19px 的大标题（「资料 D:」）+ 副标题「59 项」。
    删掉了：下面盘符条里选中的那一项就是当前位置，同一个信息说两遍只是把首屏顶下去。 */
@@ -397,10 +471,12 @@ td.cap { white-space: nowrap; }
 }
 .fs-roots::-webkit-scrollbar { display: none; }
 .chip {
-  flex: 0 0 auto; font-size: 12px; padding: 6px 12px; border-radius: 999px;
+  flex: 0 0 auto; font-size: 12px; padding: 6px 12px; border-radius: 6px;
   background: var(--surface); border: 1px solid var(--border); color: var(--text-2);
   font-family: inherit; cursor: pointer;
 }
+/* 主题只管配色，形状是全局的：按钮一律 6px 方角（原来是药丸）。
+   曾经只有 nas 主题是方的、其他主题药丸 —— 同一个控件换主题就变形，没有道理。 */
 .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 /* 只读根角标：跟盘符同高的小药丸，在 .on 态下也要能看清 */
 .chip-ro {
@@ -409,7 +485,31 @@ td.cap { white-space: nowrap; }
   background: rgba(0, 0, 0, .10); color: inherit; opacity: .85;
 }
 .chip.on .chip-ro { background: rgba(255, 255, 255, .28); color: #fff; opacity: 1; }
-.fs-head-actions .chip { height: 32px; padding: 0 12px; display: inline-flex; align-items: center; }
+/* 文件站顶栏的按钮统一 32px 高 + flex 居中：原来盘符按钮靠 padding 撑高、
+   最近/收藏夹靠另一条规则固定 32px，两处各自为政，文字垂直位置也各自漂。
+   高度统一钉死后，主题怎么换配色，这一行的基线都不会动。
+   不要在这里加 padding-top 之类的"视觉补偿"：试过 +1px，反而变成偏下 0.5px；
+   flex 居中 + 固定高度本身就是最正的位置。 */
+.fs-roots .chip,
+.fs-head-actions .chip {
+  height: 32px; padding: 0 12px; display: inline-flex; align-items: center;
+}
+
+/* 根目录用量条：NAS 界面里每个存储都带一条容量读数，这是它区别于普通文件管理器的
+   最直观特征。颜色全部走变量（accent / border），主题换配色它自动跟着换。
+   文字必须保持几何居中：条用绝对定位浮在按钮底边，不给它腾 padding ——
+   曾经用 padding-bottom:10px 给条让位，文字整个被顶上去，和旁边没条的
+   「最近 / 收藏夹」一对比，一眼就能看出这排按钮偏上。 */
+.fs-roots .chip { position: relative; overflow: hidden; }
+.chip-usage {
+  display: block; position: absolute; left: 7px; right: 7px; bottom: 3px; height: 3px;
+  border-radius: 2px; overflow: hidden; background: var(--border);
+}
+.chip-usage i { display: block; height: 100%; border-radius: 2px; background: var(--accent); }
+.chip-usage i.hot { background: #d98324; }
+.chip-usage i.full { background: #b3261e; }
+.chip.on .chip-usage { background: rgba(255, 255, 255, .3); }
+.chip.on .chip-usage i { background: rgba(255, 255, 255, .92); }
 
 /* 最近浏览：点一个目录直接跳过去。只记目录不记文件 —— 用户说"具体哪个文件不重要" */
 /* 高度必须钉死（不能 max-height）：
@@ -520,12 +620,16 @@ td.cap { white-space: nowrap; }
    加上最上面的标题行，手机上光导航就吃掉 90px。 */
 .fs-nav {
   display: flex; align-items: center; gap: 10px;
-  padding: 0 16px 8px;
+  padding: 10px 16px;
 }
+/* 上下留白必须对称：这行在页面底色（灰）上，曾经上 0 下 8（桌面 2/10），
+   面包屑整行明显往上飘 —— 用户点名"整体文字偏上"。 */
 /* hidden 属性要压得住 display:flex，否则「根目录隐藏」这句等于没写 */
 .fs-nav[hidden] { display: none; }
 .fs-crumb {
-  flex: 0 1 auto; min-width: 0;
+  /* 路径吃掉剩余宽度并自己横向滚动；原来写的是 0 1 auto，结果窄屏时
+     右侧「只读 · N 项」被压出屏幕（文字被裁一半，见 390px 手机端）。 */
+  flex: 1 1 0; min-width: 0;
   display: flex; align-items: center; gap: 2px;
   font-size: 12.5px; color: var(--text-2);
   overflow-x: auto; white-space: nowrap;
@@ -537,13 +641,15 @@ td.cap { white-space: nowrap; }
 .crumb-item.link { color: var(--accent); cursor: pointer; }
 .crumb-sep { color: var(--text-3); opacity: .55; }
 
-/* 工具位：收藏星紧跟路径（两件事都在说「你现在在哪」），项数单独推到最右 */
+/* 工具位：收藏星紧跟路径（两件事都在说「你现在在哪」），项数单独推到最右。
+   按内容占位、不参与压缩 —— 缩它就会把「只读 · N 项」挤出屏幕。
+   两侧对齐由「路径撑满剩余」自然形成，不再依赖 fs-count 的 margin-left:auto。 */
 .fs-tools {
   display: flex; align-items: center; gap: 8px;
-  flex: 1 1 auto; min-width: 0;
+  flex: 0 0 auto;
 }
 .fs-count {
-  margin-left: auto; padding-left: 12px;
+  margin-left: 0; padding-left: 12px;
   font-size: 11px; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums;
 }
 
@@ -559,7 +665,15 @@ td.cap { white-space: nowrap; }
 /* 列标题：桌面端专用（手机端两列本来就不显示），给「大小 / 修改时间」一个名分 */
 .fs-colhead { display: none; }
 
-.fs-list { padding: 4px 12px 0; }
+/* 列表收进一张面板：NAS 界面里内容永远在面板里，不会裸着浮在底色上 ——
+   这是全局结构，主题只决定面板是什么颜色。最后一行不要分隔线（面板边框已经收尾）。 */
+.fs-list {
+  padding: 2px 12px 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.fs-list .row:last-child { border-bottom: 0; }
 .fs-list .row {
   display: flex; align-items: center; gap: 12px; padding: 11px 8px;
   border-bottom: 0.5px solid var(--border); cursor: pointer;
@@ -655,6 +769,8 @@ td.cap { white-space: nowrap; }
   display: flex; flex-direction: column; align-items: flex-start;
   gap: 12px; z-index: 21;
 }
+/* 迷你播放条出来时把上传 FAB 顶上去，别让它压在条子底下 */
+body.mini-on .fs-fab { bottom: calc(72px + env(safe-area-inset-bottom)); }
 .fab-btn {
   width: 54px; height: 54px; border-radius: 50%;
   border: none; cursor: pointer; font-family: inherit;
@@ -731,12 +847,47 @@ td.cap { white-space: nowrap; }
 }
 .viewer-bar span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto; }
 .viewer-bar .icon-btn { color: #f0efec; flex: 0 0 auto; }
-.viewer-bar .vb-act { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; margin-left: auto; }
+/* ⚠️ 顶栏永远是深色背景，不能用全局 .icon-btn:hover 的 var(--surface-2) ——
+   那是跟页面主题走的，浅色主题下是近白色（rgb(237,234,246)），点一下收藏星就在
+   黑条上糊一大块白。这里改成「提亮一点的白」，深色底上才对味。 */
+.viewer-bar .icon-btn:hover,
+.viewer-bar .icon-btn:focus-visible { background: rgba(255, 255, 255, .16); }
+.viewer-bar .icon-btn:active { background: rgba(255, 255, 255, .24); }
+.viewer-bar .vb-act { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; margin-left: auto; }
+/* 顶栏最右的「收起 ⌄」和「关闭 ✕」离得近又都高频，误触就出事 ——
+   收起退到最外（贴角），中间加一条竖分隔线，手指想收起时自然落在最右上角 */
+#viewerMin { margin-left: 8px; position: relative; }
+#viewerMin::before {
+  content: ''; position: absolute; left: -9px; top: 50%; transform: translateY(-50%);
+  width: 1px; height: 16px; background: rgba(255, 255, 255, .28);
+}
 .viewer-bar .icon-btn.on { color: #d6a05a; }
+/* 已收藏：金色 + 星形淡淡填一层。「已收藏」是个状态，光换个描边色在 19px 的小图标上
+   几乎看不出来；填一点点比整颗填死（很土）克制，也一眼能分辨 */
+.viewer-bar #viewerFav.on svg { fill: currentColor; fill-opacity: .28; }
+/* 音频模式：顶栏 = 「收藏（最左）· 歌名（正中）· 收起/关闭（最右）」。
+   标题必须**绝对居中** —— 左边只有一个星、右边两个按钮，用 flex 分配剩余空间会偏。
+   ⚠️ 播放页内部不要再放一份标题/收藏，上下两行各管一件事：
+   顶栏管「这是哪首、收不收藏」，下面那一行管「音效 / 音量一致」。 */
+.viewer.is-audio .viewer-bar #viewerName {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  max-width: calc(100% - 168px);
+  text-align: center; font-weight: 600; font-size: 13.5px; color: rgba(255, 255, 255, .92);
+}
 /* viewer-body 必须是「确定尺寸」的容器，文本预览靠绝对定位贴进去（见 .textview） */
 .viewer-body { flex: 1; min-height: 0; position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .viewer-body img, .viewer-body video { max-width: 100%; max-height: 100%; }
 .viewer-body audio { width: 90%; }
+
+/* 常驻音频元素放在页面根部：viewer / 迷你条怎么显隐都碰不到它的祖先容器。
+   注意：不带 controls 的 <audio> 浏览器本来就不渲染（UA 层面强制 display:none，
+   连 !important 都盖不住），这是常态、桌面 Chrome 下不影响播放，不用去跟它较劲。
+   ⭐ 也别再给它加 width:1px / height:1px / overflow:hidden —— iOS Safari 会把这种
+   「尺寸被裁到看不见」的媒体判成隐藏媒体，收起 / 切后台时直接停掉解码。
+   这里只让它脱离文档流，不缩尺寸、不裁剪、不设 opacity。 */
+#mpAudio {
+  position: fixed; top: 0; left: 0; pointer-events: none;
+}
 
 /* ---- 音乐播放器 ----
    骨架照网易云的播放页来：上面一张转着的黑胶、右边歌词逐行高亮，
@@ -801,11 +952,8 @@ td.cap { white-space: nowrap; }
   background: linear-gradient(150deg, #2b3a52, #151b25); transition: opacity .4s;
 }
 .mp.has-art .mp-cover-ph { opacity: 0; }
-/* 唱片中心的出音孔 */
-.mp-hole {
-  position: absolute; width: 9px; height: 9px; border-radius: 50%;
-  background: #0a0b0e; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .22);
-}
+/* 唱片中心的出音孔：2026-11-04 按用户要求去掉了 —— 掏孔正好掏在人脸封面的
+   鼻子上，很难看。封面要完完整整地显示，黑胶感靠盘面纹路和唱针来撑。 */
 
 /* 唱针：播放时压到盘上，暂停抬起来。慢一点、带一点回弹，才像有重量 */
 .mp-arm {
@@ -914,6 +1062,30 @@ td.cap { white-space: nowrap; }
 }
 .mp-mode:hover { color: #fff; background: rgba(255, 255, 255, .09); }
 .mp-mode.on { color: #6aa6ff; }
+/* 音量为 0 时标红：进度条照走但没声音，得让人一眼看出是静音而不是播放器坏了 */
+.mp-mode.muted { color: #ff8a80; }
+
+/* 音量：喇叭钮 + 细滑条，跟进度条同一套轨道/拇指画法。
+   桌面横着放；手机端在下面媒体查询里把横条收成点喇叭才弹出的竖条。 */
+.mp-vol { display: flex; align-items: center; gap: 2px; }
+.mp-vol-pop { display: block; }
+.mp-vol-range {
+  -webkit-appearance: none; appearance: none; width: 68px; height: 18px;
+  background: transparent; cursor: pointer;
+}
+.mp-vol-range::-webkit-slider-runnable-track {
+  height: 4px; border-radius: 999px;
+  background: linear-gradient(to right, #4a86e8 var(--p, 100%), rgba(255, 255, 255, .18) var(--p, 100%));
+}
+.mp-vol-range::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; width: 11px; height: 11px; margin-top: -3.5px;
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .5);
+  transition: transform .15s;
+}
+.mp-vol-range:hover::-webkit-slider-thumb, .mp-vol-range:active::-webkit-slider-thumb { transform: scale(1.25); }
+.mp-vol-range::-moz-range-track { height: 4px; border-radius: 999px; background: rgba(255, 255, 255, .18); }
+.mp-vol-range::-moz-range-progress { height: 4px; border-radius: 999px; background: #4a86e8; }
+.mp-vol-range::-moz-range-thumb { width: 11px; height: 11px; border: 0; border-radius: 50%; background: #fff; }
 
 /* 进度条：轨道用渐变画「已播」那一段 —— webkit 没有 ::-moz-range-progress 的对应物 */
 .mp-seek { -webkit-appearance: none; appearance: none; flex: 1 1 auto; min-width: 0; height: 18px; background: transparent; cursor: pointer; }
@@ -931,6 +1103,74 @@ td.cap { white-space: nowrap; }
 .mp-seek::-moz-range-progress { height: 4px; border-radius: 999px; background: #4a86e8; }
 .mp-seek::-moz-range-thumb { width: 11px; height: 11px; border: 0; border-radius: 50%; background: #fff; }
 .mp-seek:focus-visible { outline: 2px solid #4a86e8; outline-offset: 4px; border-radius: 4px; }
+
+/* ---- 播放页两个开关 ----
+   顶栏已经管了「歌名 + 收藏」，这一行只管两个处理开关：左「音量一致」、右「音效」。
+   分列两端而不是挤在一起 —— 两个是互不相干的功能，各自能独立开关、还能叠加，
+   挨着放会让人以为是二选一。 */
+.mp-head {
+  position: relative; z-index: 3; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px clamp(16px, 3vw, 34px) 0;
+}
+
+/* 头部按钮：跟底栏 .mp-mode 同一套手感（无边框、悬停提亮、按下微缩），
+   只是这里带文字和当前值，才给一层极淡的底把它托成「可点的块」 */
+.mp-hbtn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 30px; padding: 0 11px; border: 0; border-radius: 999px;
+  background: rgba(255, 255, 255, .07); color: rgba(255, 255, 255, .72);
+  font-family: inherit; font-size: 12.5px; font-weight: 500; line-height: 1;
+  cursor: pointer; white-space: nowrap; -webkit-tap-highlight-color: transparent;
+  transition: color .15s, background .15s, transform .12s;
+}
+.mp-hbtn:hover { color: #fff; background: rgba(255, 255, 255, .13); }
+.mp-hbtn:active { transform: scale(.96); }
+.mp-hbtn svg { flex: 0 0 auto; opacity: .9; }
+/* 当前值（开/关、预设名）弱一档：这是「状态」，不是第二个可点的东西 */
+.mp-hbtn i { font-style: normal; font-weight: 400; color: rgba(255, 255, 255, .45); }
+.mp-hbtn.on { color: #cfe1ff; background: rgba(74, 134, 232, .3); }
+.mp-hbtn.on svg { opacity: 1; }
+.mp-hbtn.on i { color: rgba(207, 225, 255, .72); }
+/* 冷缓存首次切音效：服务端转码中（数秒），呼吸闪烁提示「转换中」 */
+.mp-hbtn.busy { animation: mpfxbusy .9s ease-in-out infinite alternate; }
+@keyframes mpfxbusy { from { opacity: 1; } to { opacity: .4; } }
+
+/* 音效面板：挂在「音效」按钮下方、右边缘对齐按钮的右边距（绝对定位的百分比/0
+   参照的是 padding box，直接 right:0 会贴到容器边上，跟按钮错开一截） */
+.mp-fx-pop {
+  display: none; position: absolute; z-index: 9; top: calc(100% + 8px);
+  right: clamp(16px, 3vw, 34px);
+  width: 272px; padding: 10px; border-radius: 12px;
+  background: rgba(24, 26, 32, .97); border: 1px solid rgba(255, 255, 255, .12);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .55);
+  -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+}
+.mp-fx-pop.on { display: block; }
+.mp-fx-h {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 4px 6px 8px; font-size: 12.5px; font-weight: 600; color: #e8eaee;
+}
+.mp-fx-h em { font-style: normal; font-size: 11px; font-weight: 400; color: rgba(255, 255, 255, .38); }
+.mp-fx-opt {
+  display: block; width: 100%; position: relative; text-align: left;
+  padding: 9px 30px 9px 11px; margin-top: 4px; border: 0; border-radius: 8px;
+  background: transparent; color: rgba(255, 255, 255, .75); cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.mp-fx-opt:hover { background: rgba(255, 255, 255, .07); }
+.mp-fx-opt.on { background: rgba(74, 134, 232, .16); color: #fff; }
+.mp-fx-opt b { display: block; font-size: 13px; font-weight: 600; }
+.mp-fx-opt small { display: block; margin-top: 2px; font-size: 11px; color: rgba(255, 255, 255, .42); }
+.mp-fx-tick {
+  display: none; position: absolute; right: 11px; top: 50%; transform: translateY(-50%);
+  color: #8db8ff; font-size: 14px;
+}
+.mp-fx-opt.on .mp-fx-tick { display: block; }
+.mp-fx-note {
+  padding: 9px 6px 2px; margin-top: 8px; border-top: 1px solid rgba(255, 255, 255, .08);
+  font-size: 11px; line-height: 1.5; color: rgba(255, 255, 255, .35);
+}
 
 /* ---- 队列抽屉 ---- */
 .mp-qpane {
@@ -975,8 +1215,10 @@ td.cap { white-space: nowrap; }
 @media (max-width: 767px) {
   /* 手机上 .meta 行本来就显示歌手，歌名后面的小字就重复了 */
   .fs-list .row-sub { display: none; }
-  /* 竖屏放不下「左盘右词」，改成上下：小盘在上，歌词在下面滚 */
-  .mp-stage { flex-direction: column; gap: 8px; padding: 24px 16px 0; }
+  /* 竖屏放不下「左盘右词」，改成上下：小盘在上，歌词在下面滚。
+     顶部留白从 24px 减到 10px —— 音效/音量这些按钮已经收进 .mp-head，
+     黑胶不用再为浮在上面的 chip 让位置了 */
+  .mp-stage { flex-direction: column; gap: 8px; padding: 10px 16px 0; }
   .mp-disc { width: 186px; height: 186px; }
   .mp-arm { width: 20px; transform-origin: 50% 9px; }
   .mp-arm::before { width: 20px; height: 20px; }
@@ -986,18 +1228,50 @@ td.cap { white-space: nowrap; }
   .mp-ly.on { font-size: 16.5px; }
   .mp-empty-t { font-size: 19px; }
   .mp-empty-h { margin-top: 18px; }
-  .mp-ctl { gap: 8px; }
-  /* 手机底部太窄：歌名在顶栏已有，这里只留控件，三键才不挤。
-     用 visibility 不用 display —— display:none 会让它退出栅格，
-     后面的两键顶到第一列，三键就整体左偏了 */
-  .mp-now { visibility: hidden; }
-  .mp-btns { gap: 12px; }
-  .mp-btn { width: 32px; height: 32px; }
-  .mp-btn.primary { width: 44px; height: 44px; }
+  /* 手机端三键严格居中。原来 1fr auto 1fr 的右列被音量横条撑宽，把中间列挤到左边；
+     横条收起后改成：三键绝对居中，右侧工具组用 flex 靠右（三键脱离流后 grid 会
+     把 .mp-right 自动挪到第一列，所以这里干脆不用 grid）。min-height 顶住原来三键撑出的行高。 */
+  .mp-ctl { position: relative; display: flex; justify-content: flex-end; align-items: center; gap: 0; min-height: 42px; }
+  .mp-now { display: none; }   /* 歌名顶栏已有，这一列整个不要 */
+  .mp-btns { position: absolute; left: 50%; transform: translateX(-50%); gap: 10px; }
+  .mp-btn { width: 30px; height: 30px; }
+  .mp-btn.primary { width: 42px; height: 42px; }
   .mp-right { gap: 0; }
-  .mp-mode { width: 30px; height: 30px; }
+  .mp-mode { width: 28px; height: 28px; }
+  /* 音量横条收起：点喇叭从按钮上方抽一条竖的，跟迷你条同一套手感 */
+  .mp-vol { position: relative; }
+  .mp-vol-pop {
+    display: none; position: absolute; z-index: 8;
+    right: 50%; bottom: calc(100% + 8px); transform: translateX(50%);
+    width: 34px; height: 150px;
+    background: rgba(24, 26, 32, .97); border: 1px solid rgba(255, 255, 255, .12);
+    border-radius: 10px 10px 0 0;
+    -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+  }
+  .mp-vol.on .mp-vol-pop { display: block; }
+  .mp-vol-pop .mp-vol-range {
+    position: absolute; left: 50%; top: 50%; margin: 0;
+    width: 118px; height: 18px; display: block;
+    transform: translate(-50%, -50%) rotate(-90deg);
+    -webkit-appearance: none; appearance: none;
+    background: transparent; cursor: pointer;
+  }
   .mp-t { min-width: 32px; font-size: 11px; }
   .mp-foot { padding: 4px 14px calc(11px + env(safe-area-inset-bottom)); }
+  /* 两个开关缩一档，仍分列两端。
+     ⚠️ 「音效 / 音量一致」这几个字手机上**不能**藏 —— 只剩「关」「原声」两个字，
+     谁也看不出它是干嘛的（用户就是为了这个才要求写中文的）。所以只降字号和内边距。 */
+  .mp-head { padding: 8px 12px 0; }
+  .mp-hbtn { height: 28px; padding: 0 9px; gap: 4px; font-size: 11px; }
+  /* 手机端改成贴在播放条上方的整宽卡片：右上角再垂一条浮层会把整张黑胶盖住，
+     而且手指也够不着。底部卡片既露着唱片，五个选项又都在拇指范围内。
+     加到第五个预设后卡片更高，小屏（如 667px）要能滚，别顶出屏幕。 */
+  .mp-fx-pop {
+    position: fixed; left: 12px; right: 12px; top: auto; width: auto;
+    bottom: calc(96px + env(safe-area-inset-bottom));
+    max-height: calc(100vh - 130px - env(safe-area-inset-bottom));
+    overflow-y: auto; -webkit-overflow-scrolling: touch;
+  }
 }
 
 /* PDF 内嵌：铺满预览区，灰底是桌面 Chrome 查看器的习惯底色，四周不像「没加载出来」 */
@@ -1304,11 +1578,13 @@ a.btn { text-decoration: none; }
 @media (min-width: 768px) {
   .fs-body { padding-bottom: 24px; }
 
-  /* 内容收中：头部 / 导航行 / 列标题 / 列表 同一宽度（根目录条已在头部里面，跟着走） */
-  .fs-head, .fs-nav, .fs-colhead, .fs-list {
+  /* 内容收中：头部 / 导航行 / 列标题 / 列表 / 音乐页 同一宽度（根目录条已在头部里面，跟着走）。
+     .music-view 曾经漏在这一组外面：桌面端它是 1280 全宽，卡片一路顶到最左边，
+     右边留一大片空 —— 和列表页对不上，看起来像没写完。 */
+  .fs-head, .fs-nav, .fs-colhead, .fs-list, .music-view {
     max-width: 1040px; margin-left: auto; margin-right: auto;
   }
-  .fs-head { padding: 18px 16px 12px; gap: 16px; flex-wrap: nowrap; }
+  .fs-head { padding: 15px 16px; gap: 16px; flex-wrap: nowrap; }
   /* 桌面端一行：盘符条在左（吃掉剩余宽度），操作在右 */
   .fs-roots { flex: 1 1 auto; min-width: 0; padding: 0; }
   .fs-head-actions { flex: 0 0 auto; }
@@ -1316,7 +1592,7 @@ a.btn { text-decoration: none; }
   .sort-btn .sort-txt { display: inline; }
   /* 右边距 72px = 16(列表)+12(行内距)+32(⋮)+12(间隙)：让项数右缘
      跟「修改时间」列标题落在同一条竖线上，右侧不至于两层各往各的方向跑 */
-  .fs-nav { padding: 2px 72px 10px 16px; }
+  .fs-nav { padding: 10px 72px 10px 16px; }
   .fs-list { padding: 0 16px 8px; }
 
   /* 列标题：跟列表行同一套列宽/间距（gap 12px、右列 92/118、末尾 32 给 ⋮） */
@@ -1384,6 +1660,22 @@ a.btn { text-decoration: none; }
   #sheet .modal { width: 360px; }
   #mvSheet .modal { width: 440px; }
   #prompt .modal { width: 380px; }
+  #castSheet .modal { width: 380px; }
+  /* 曲库管理：内容是「可压缩的长路径省略号 + flex 行」，width:auto 会被压扁成细条
+     （跟 #sheet 同一类病），按它 inline 的 max-width 钉死 420 */
+  #libMgr .modal { width: 420px; }
+  /* 加入歌单：桌面端是「从曲库挑歌」的工作界面，不是手机小弹层。
+     加宽到 780、列表 58vh、两栏网格 —— 700 多首的库一屏能看二十来行，
+     不用一直往下滚。手机端完全不变（仍走 .modal 的 width:100% 单栏）。 */
+  #plPick .modal { width: 780px; max-width: 780px; }
+  #plPick .plpick-list {
+    max-height: 58vh; display: grid; grid-template-columns: 1fr 1fr;
+    column-gap: 14px; align-content: start;
+  }
+  /* 空态 / 提示行跨满两栏，别只缩在左半边 */
+  #plPick .plpick-list > .mu-empty-s { grid-column: 1 / -1; }
+  #plPick .plpick-toolbar { gap: 10px; }
+  #plPick .plpick-toolbar input { font-size: 13px; }
   .viewer-bar { padding: 10px 20px; }
 }
 
@@ -1565,3 +1857,363 @@ a.qr-url:hover { text-decoration: underline; }
   white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .cmd-row .btn { flex: 0 0 auto; }
+
+/* ---------- 音乐页（文件站「音乐」chip 进入） ----------
+   整页替代文件列表：头部 tab + 搜索，下面是歌手/专辑卡片格或曲目行。 */
+
+body.music-on .fs-nav,
+body.music-on .fs-colhead,
+body.music-on .fs-list,
+body.music-on .fs-fab,
+body.music-on .fs-uploadbox { display: none !important; }
+
+/* 音乐模式 = 独立页面：文件页顶栏（盘符条 + 最近/收藏夹/上传/新建…）在这里
+   一个都用不上，点它们也没反应，杵着只会让人以为还能用 —— 整条藏掉，
+   换成只带「返回文件」的音乐顶栏。退出音乐时随 class 一起换回来。 */
+body.music-on .fs-head { display: none !important; }
+
+.mu-topbar {
+  display: none; align-items: center; gap: 10px;
+  position: sticky; top: 0; z-index: 10;
+  padding: calc(8px + env(safe-area-inset-top)) 12px 8px;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+}
+body.music-on .mu-topbar { display: flex; }
+.mu-topbar-t { font-size: 15px; font-weight: 600; color: var(--text); }
+/* 桌面端背景仍通栏，但按钮跟 1040 的内容区左缘对齐（和文件页顶栏同一条线） */
+@media (min-width: 768px) {
+  .mu-topbar {
+    padding-left: calc((100% - 1040px) / 2 + 16px);
+    padding-right: calc((100% - 1040px) / 2 + 16px);
+  }
+}
+
+.music-view { padding: 4px 14px 40px; min-height: 60vh; }
+
+/* 吸附位置不能写 0：上面还有一条 sticky 的 .fs-head（z-index 10 > 5），
+   top:0 会让 tabs 滚到顶栏底下被整块盖住、看起来像消失了。
+   --fs-head-h 由 files.js 每次渲染时按顶栏实际高度写入（手机端盘符条会换行，高度不是常数）。 */
+.mu-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; position: sticky; top: var(--fs-head-h, 0px); background: var(--bg); padding: 6px 0 8px; z-index: 5; }
+.mu-back { flex: 0 0 auto; }
+/* hidden 属性被 .icon-btn 的 display:flex 覆盖，这里显式压掉 —— 根视图不该出现返回箭头 */
+.mu-back[hidden] { display: none !important; }
+
+/* 音乐页的「曲库管理」弹层（仅管理员可见的齿轮入口） */
+.libmgr-list { max-height: 176px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.libmgr-list:empty { display: none; }
+.libmgr-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.libmgr-row:last-child { border-bottom: none; }
+/* 路径太长时留尾巴（盘符和末尾目录名才是认得出的部分） */
+.libmgr-row .p { flex: 1; min-width: 0; font-size: 12px; color: var(--text-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+.libmgr-row .ro { flex: 0 0 auto; font-size: 11px; color: var(--text-3); }
+.libmgr-cur { margin-top: 8px; font-size: 12px; color: var(--text-2); word-break: break-all; }
+/* 「把当前目录加入曲库」：撑满整行的大按钮。
+   原来用的 .btn.sm（22px 高）又拉满 420 宽，看着像一条细扁条 —— 用基础尺寸 33px 才立得住 */
+.libmgr-add { width: 100%; margin-top: 10px; padding: 9px 14px; }
+.libmgr-empty { padding: 12px; font-size: 12px; color: var(--text-3); text-align: center; }
+.mu-tabs { display: flex; gap: 2px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 3px; }
+.mu-tabs button {
+  border: 0; background: transparent; color: var(--text-2); font-family: inherit;
+  font-size: 12.5px; padding: 5px 11px; border-radius: 4px; cursor: pointer; white-space: nowrap;
+}
+.mu-tabs button.on { background: var(--accent); color: #fff; }
+.mu-search {
+  flex: 1 1 auto; min-width: 0; max-width: 420px; display: flex; align-items: center; gap: 6px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px;
+  color: var(--text-3);
+}
+.mu-search input { border: 0; outline: 0; background: transparent; color: var(--text); font-family: inherit; font-size: 13px; width: 100%; min-width: 0; }
+/* 曲库管理入口：tabs 行右边可能空一大片，不靠右的话图标吊在空白中间。 */
+.mu-mgr { margin-left: auto; }
+
+/* 搜索框在顶栏（mu-topbar）里：跟着返回钮和标题站一行，占满剩余宽度。
+   420px 上限是它挤在 tabs 行时代的产物，顶栏里放 开才好看。 */
+.mu-topbar .mu-search { flex: 1 1 auto; max-width: 560px; }
+
+/* 全部曲目的「所有 / 各文件夹」筛选条：横向 chips，多了能横滑（选中态用现成的 .chip.on） */
+.mu-filter { display: flex; gap: 6px; overflow-x: auto; padding: 8px 0 2px; -webkit-overflow-scrolling: touch; }
+.mu-filter .chip { flex: 0 0 auto; }
+
+.mu-scan {
+  margin: 6px 0 10px; padding: 8px 12px; border-radius: 10px; font-size: 12.5px;
+  background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent-line);
+}
+
+/* 歌手 / 专辑卡片格 */
+.mu-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-top: 10px; }
+/* 宽屏卡片放大：1040 宽度里 150px 最小列会排出 6 列，卡片小得像缩略图；
+   180px 排 5 列，封面才撑得住「媒体库」的分量。手机端保持上面的基础值（640 以下 2 列）。
+   ⚠️ 必须写在这条基础规则之后：同选择器同优先级，后出现的才是赢家
+   （曾经写在桌面端媒体查询块里、位置更靠前，结果被这里覆盖，改了半天没生效）。 */
+@media (min-width: 768px) {
+  .mu-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
+  .mu-tabs button { font-size: 13px; padding: 6px 13px; }
+}
+.mu-card {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px; text-align: left;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px; cursor: pointer; font-family: inherit; color: var(--text); min-width: 0;
+}
+.mu-card:active { background: var(--surface-2); }
+.mu-card-t { font-size: 13.5px; font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mu-card-s { font-size: 11.5px; color: var(--text-3); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mu-ava {
+  width: 44px; height: 44px; border-radius: 50%; margin-bottom: 6px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-soft); color: var(--accent); font-size: 19px; font-weight: 700;
+}
+.mu-card.al { padding: 0; overflow: hidden; }
+.mu-cov {
+  display: block; width: 100%; aspect-ratio: 1; position: relative; overflow: hidden;
+  background: var(--surface-2);
+}
+.mu-cov img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.mu-cov i { display: none; position: absolute; inset: 0; align-items: center; justify-content: center; color: var(--text-3); }
+.mu-cov.ph i { display: flex; }
+.mu-card.al .mu-card-t, .mu-card.al .mu-card-s { padding: 0 12px; margin: 4px 0 0; }
+.mu-card.al .mu-card-s { margin-bottom: 12px; }
+
+/* 曲目 / 歌单行 */
+.mu-list { margin-top: 8px; }
+.mu-row {
+  display: flex; align-items: center; gap: 12px; padding: 10px 0; cursor: pointer;
+  border-bottom: 0.5px solid var(--border); min-width: 0;
+}
+.mu-row:active { background: var(--surface-2); }
+/* ⚠️ 2026-11-06 十改：这一列原来是 14px 占位 + 12px 间距，歌名被整体推右 32px，
+   跟顶部的 tab 组 / 筛选 chip 对不上（用户：「始终没有对齐，感觉有点怪」）。
+   序号本来就是 display:none（只有播放中的跳动条用它占位），占位却一直留着 ——
+   所以直接撤掉，让歌名与顶部元素同一条竖线，「正在播放」改成整行淡主题色 + 歌名变色。 */
+.mu-no { display: none; }
+.mu-row.playing { background: var(--accent-soft); }
+.mu-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mu-main b { font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* 歌名与规格标同一行：歌名可省略、标不缩 —— 标挂在文字后面，不会把歌名推右 */
+.mu-main b .mu-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mu-main i { font-style: normal; font-size: 11.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 规格小标：Hi-Res（比 CD 高）/ 无损（CD 规格）。跟着歌名一起被省略号截断。
+   标签颜色不跟主题走 —— 金标是 Hi-Res 的通用符号，深色主题下换亮一点的金。 */
+.mu-q {
+  display: inline-block; flex: 0 0 auto; padding: 1px 4px;
+  border-radius: 3px; font-size: 9px; font-weight: 700; line-height: 1.2;
+  letter-spacing: .03em; white-space: nowrap; user-select: none;
+}
+.mu-q.hires { color: #8a6400; background: rgba(212, 160, 23, .16); border: .5px solid rgba(212, 160, 23, .5); }
+.mu-q.lossless { color: var(--text-2); background: var(--surface-2); border: .5px solid var(--border); }
+html[data-theme="dark"] .mu-q.hires { color: #f2d07a; background: rgba(212, 160, 23, .22); border-color: rgba(212, 160, 23, .55); }
+.mu-dur { color: var(--text-3); font-size: 12px; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.mu-add {
+  flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text-2); cursor: pointer;
+  display: flex; align-items: center; justify-content: center; padding: 0;
+}
+.mu-add:active { background: var(--accent-soft); color: var(--accent); }
+/* 行内收藏星：每首歌都要有，空星低调、点亮后主题色 */
+.mu-fav {
+  flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%; border: 0;
+  background: none; color: var(--text-3); cursor: pointer;
+  display: flex; align-items: center; justify-content: center; padding: 0;
+}
+.mu-fav.on { color: var(--accent); }
+.mu-row.gone { opacity: .5; }
+.mu-row.gone .mu-main b { text-decoration: line-through; }
+.mu-pl-ico { width: 34px; height: 34px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); display: flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+
+.mu-empty {
+  padding: 60px 20px; text-align: center; color: var(--text-3);
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+}
+.mu-empty-t { font-size: 14px; color: var(--text-2); }
+.mu-empty-s { font-size: 12px; }
+/* 空态里的行动按钮：曲库一首歌都没有时，管理员最该做的就是去加目录 */
+.mu-empty-act { margin-top: 12px; }
+
+/* 加入歌单弹窗里的列表复用 mu-row，去掉边框更像菜单 */
+#plPickList .mu-row { border-bottom: 0; border-radius: 10px; padding: 9px 8px; }
+#plPickList .mu-row:active { background: var(--surface-2); }
+/* 多选挑歌：列表自己滚，底部按钮不被顶走 */
+.plpick-list { max-height: 46vh; overflow-y: auto; overscroll-behavior: contain; }
+.plpick-toolbar { display: flex; gap: 8px; margin-bottom: 8px; }
+.plpick-toolbar input { flex: 1; min-width: 0; }
+/* 勾选圈：没选时空圈，选中变实心圆勾 */
+.mu-check {
+  width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid var(--border);
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
+  color: transparent; font-size: 12px; font-weight: 700; transition: background .15s, border-color .15s, color .15s;
+}
+.mu-row.sel { background: var(--accent-soft); }
+.mu-row.sel .mu-check { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* 已经在歌单里的歌：置灰不可再选，右上角挂「已在」 */
+.mu-row.dis { opacity: .45; cursor: default; }
+.mu-tag {
+  flex: 0 0 auto; font-size: 11px; color: var(--text-3); border: 1px solid var(--border);
+  border-radius: 4px; padding: 2px 6px;
+}
+
+/* 歌单详情操作条：左边功能、右边管理；手机放不下时右侧组整体换行靠右 */
+.mu-pl-actions { display: flex; gap: 8px; margin: 12px 0 2px; flex-wrap: wrap; align-items: center; }
+.mu-pl-manage { display: flex; gap: 8px; margin-left: auto; }
+
+/* 批量管理条：进入批量模式才出现，浅主题色底提示「现在点行是勾选不是播放」 */
+.mu-batch-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 10px 0 2px; padding: 8px 12px; border-radius: 10px;
+  background: var(--accent-soft); border: 1px solid transparent;
+}
+.mu-batch-bar[hidden] { display: none; }
+.mu-batch-cnt { font-size: 12.5px; font-weight: 600; color: var(--accent); margin-right: auto; }
+/* 勾选圈默认只在「加入歌单」弹窗里出现，歌单行按需显示 */
+.mu-row.swipe .mu-check { display: none; }
+.mu-batch-on .mu-row.swipe .mu-check { display: flex; }
+/* 批量模式下把行内零散按钮都收起来：这时的唯一动作是勾选 */
+.mu-batch-on .mu-row.swipe .mu-fav,
+.mu-batch-on .mu-row.swipe .mu-add { display: none; }
+.mu-batch-on .mu-row.swipe .mu-swipe-inner { transform: none !important; }
+.mu-batch-on .mu-row.swipe { cursor: default; }
+/* 窄屏一行装下五个按钮：按钮略收、管理组前加竖分隔线，
+   「加歌」和「删除歌单」之间留出视觉距离 */
+@media (max-width: 520px) {
+  .mu-pl-actions { gap: 6px; }
+  .mu-pl-actions .btn.sm { padding: 4px 8px; }
+  .mu-pl-manage { padding-left: 10px; border-left: 1px solid var(--border); }
+}
+
+/* 左滑删歌：删除钮藏在行右端底下，手指把内容推左才露出来 ——
+   误触不了，比常驻 ✕ 安全。桌面（hover 设备）改为悬停露 ✕。 */
+.mu-row.swipe { position: relative; overflow: hidden; padding: 0; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
+.mu-row.swipe .mu-swipe-inner {
+  display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0;
+  padding: 10px 0; background: var(--bg); position: relative; z-index: 1;
+  transition: transform .22s ease; will-change: transform;
+}
+.mu-row.swipe:active .mu-swipe-inner { background: var(--surface-2); }
+/* 正在播放：inner 自己铺了不透明底色，必须同步染色，不然整行高亮被盖住 */
+.mu-row.swipe.playing .mu-swipe-inner { background: var(--accent-soft); }
+.mu-row.swipe.open .mu-swipe-inner { transform: translateX(-76px); }
+.mu-swipe-del {
+  position: absolute; top: 6px; bottom: 6px; right: 6px; width: 64px;
+  border: 0; border-radius: 8px; background: #b3261e; color: #fff;
+  font-size: 12.5px; cursor: pointer; padding: 0;
+}
+.mu-row.swipe .mu-add { display: none; }
+@media (hover: hover) and (pointer: fine) {
+  /* 桌面没有手势，悬停时露出原来的 ✕ —— 位置固定不误触 */
+  .mu-row.swipe:hover .mu-add { display: flex; }
+}
+
+/* 列表里「正在播的是这首」：整行淡主题色 + 歌名主题色。
+   原来的「序号位换跳动条」已撤（见上面 .mu-no 的注释）—— 那 14px 占位正是
+   歌名对不齐的元凶，留着它就只能二选一。整行染色不占位，跟顶部元素天然对齐。 */
+.mu-row.playing .mu-main b { color: var(--accent); }
+
+/* ---------- 迷你播放条 ----------
+   全屏播放器收起后挂在底部：封面 + 歌名 + 当前这句歌词 + 上一曲/播放/下一曲。
+   点中间回全屏，✕ 真关。层级压在 viewer(60) 之下，展开时正好被盖住。 */
+.mpmini {
+  display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 55;
+  align-items: center; gap: 4px;
+  padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+  background: var(--surface); border-top: 1px solid var(--border);
+}
+body.mini-on .mpmini { display: flex; }
+/* 条子占住的高度：别让列表最后一行被它盖住 */
+body.mini-on { padding-bottom: 58px; }
+.mpmini-click { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; cursor: pointer; }
+.mpmini-art {
+  position: relative; width: 40px; height: 40px; border-radius: 8px; overflow: hidden;
+  background: var(--accent-soft); color: var(--accent); flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+}
+.mpmini-art img { display: none; position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.mpmini-art img.on { display: block; }
+.mpmini-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.mpmini-main b { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mpmini-main i {
+  font-style: normal; font-size: 11.5px; color: var(--text-3); min-height: 15px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mpmini-ctl { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+.mpmini-btn {
+  border: 0; background: transparent; color: var(--text); cursor: pointer;
+  width: 36px; height: 36px; border-radius: 50%; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.mpmini-btn.primary { background: var(--accent); color: #fff; width: 40px; height: 40px; }
+.mpmini-x { color: var(--text-3); width: 30px; height: 30px; }
+/* 迷你条上的循环/随机/音量：比切歌键淡一点，开了循环/随机才亮主题色 */
+.mpmini-btn.mpmini-mode { color: var(--text-3); width: 32px; height: 36px; }
+.mpmini-btn.mpmini-mode.on { color: var(--accent); }
+.mpmini-btn.mpmini-mode.muted { color: #ff8a80; }
+/* 音量浮层：迷你条放不下常驻滑条，点喇叭从条子顶上抽一条竖的出来。
+   跟迷你条同底色、无阴影、底边直接坐在条的边框上 —— 是条子「长出来」的一截，
+   不是浮在另一层级上的小卡片 */
+.mpmini-vol { position: relative; display: flex; align-items: center; }
+.mini-vol-pop {
+  display: none; position: absolute; left: 50%; bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  width: 34px; height: 150px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px 10px 0 0;
+  z-index: 56;
+}
+.mini-vol-pop.on { display: block; }
+/* 竖向滑条：横条转 -90°（右端朝上，填充从下往上长），比原生的 slider-vertical 兼容 */
+.mini-vol-pop input {
+  position: absolute; left: 50%; top: 50%; margin: 0;
+  width: 118px; height: 18px; display: block;
+  transform: translate(-50%, -50%) rotate(-90deg);
+  -webkit-appearance: none; appearance: none;
+  background: transparent; cursor: pointer;
+}
+.mini-vol-pop input::-webkit-slider-runnable-track {
+  height: 4px; border-radius: 999px;
+  background: linear-gradient(to right, var(--accent) var(--p, 100%), var(--border) var(--p, 100%));
+}
+.mini-vol-pop input::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; width: 12px; height: 12px; margin-top: -4px;
+  border-radius: 50%; background: var(--accent);
+}
+.mini-vol-pop input::-moz-range-track { height: 4px; border-radius: 999px; background: var(--border); }
+.mini-vol-pop input::-moz-range-progress { height: 4px; border-radius: 999px; background: var(--accent); }
+.mini-vol-pop input::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; background: var(--accent); }
+/* 宽屏跟页面内容列（1040）对齐，别贴在浏览器最边上 —— 跟 .mu-topbar 一套口径 */
+@media (min-width: 768px) {
+  .mpmini {
+    /* max() 兜住 768~1060 这段：公式会算成负数，不能让它把 padding 顶掉 */
+    padding-left: max(10px, calc((100% - 1040px) / 2 + 10px));
+    padding-right: max(10px, calc((100% - 1040px) / 2 + 10px));
+  }
+}
+
+/* 管理台删除歌单那种「浅危险」按钮 */
+.btn.danger-ghost { color: var(--danger); border-color: var(--border); background: var(--surface); }
+
+@media (max-width: 640px) {
+  .mu-grid { grid-template-columns: repeat(2, 1fr); }
+  /* 这里的 .mu-search { max-width: 130px } 删了：那是「tabs 和搜索框挤一行」
+     时代的产物，130px 连 placeholder 都显示不全。搜索框现在独占第二行。 */
+  .mu-tabs button { padding: 5px 8px; }
+}
+
+/* 推到电视（DLNA）：设备选择弹层。
+   它是在视频播放页里弹的，普通的 .overlay 是 z-index 50，会被播放器（60）整个盖住 ——
+   这里必须压过 60 才看得见。 */
+#castSheet { z-index: 70; }
+.cast-body { display: flex; flex-direction: column; gap: 8px; min-height: 90px; }
+.cast-status {
+  padding: 14px 10px; font-size: 13px; color: var(--text-2);
+  text-align: center; line-height: 1.7; align-self: stretch;
+}
+.cast-dev {
+  display: flex; align-items: center; gap: 10px; padding: 11px 14px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+  color: var(--text); font-size: 13.5px; font-family: inherit; cursor: pointer; text-align: left;
+}
+.cast-dev:active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.cast-dev i { display: flex; flex: 0 0 auto; color: var(--text-3); }
+/* 「停止『xx』的播放」：排在设备列表最上面的那个，用危险色跟普通设备区分开 */
+.cast-stop { color: var(--danger); border-color: var(--danger); margin-bottom: 10px; }
+.cast-stop i { color: var(--danger); }
+.cast-stop:active { border-color: var(--danger); color: var(--danger); background: transparent; }

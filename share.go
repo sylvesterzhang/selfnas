@@ -67,6 +67,7 @@ func handleSignedFile(w http.ResponseWriter, r *http.Request) {
 	phex := q.Get("p")
 	raw, err := hex.DecodeString(phex)
 	if err != nil || len(raw) == 0 {
+		log.Printf("[直链] 拒绝 %s: 链接无效（p 解不开）", clientIP(r))
 		http.Error(w, "链接无效", http.StatusForbidden)
 		return
 	}
@@ -74,17 +75,31 @@ func handleSignedFile(w http.ResponseWriter, r *http.Request) {
 	size, _ := strconv.ParseInt(q.Get("s"), 10, 64)
 	exp, _ := strconv.ParseInt(q.Get("e"), 10, 64)
 	if exp == 0 || time.Now().Unix() > exp {
+		log.Printf("[直链] 拒绝 %s %s: 链接已过期（e=%d）", clientIP(r), filepath.Base(full), exp)
 		http.Error(w, "链接已过期", http.StatusForbidden)
 		return
 	}
 	if !hmac.Equal([]byte(q.Get("g")), []byte(signPath(full, size, exp))) {
+		log.Printf("[直链] 拒绝 %s %s: 签名不对", clientIP(r), filepath.Base(full))
 		http.Error(w, "签名不对", http.StatusForbidden)
 		return
 	}
 	// 签名只对「那一个路径 + 那一个大小」有效；文件被换掉就自动失效
 	st, err := os.Stat(full)
 	if err != nil || st.IsDir() || st.Size() != size {
+		log.Printf("[直链] 拒绝 %s %s: 文件不在了或大小变了（want=%d）", clientIP(r), filepath.Base(full), size)
 		http.Error(w, "文件不在了", http.StatusNotFound)
+		return
+	}
+	// iOS 锁屏的 MediaSession artwork：系统媒体服务会自己去抓这个 URL，但它不带
+	// 网页 cookie，/api/fs/cover 会被 401 挡掉，锁屏就只剩站点图标。
+	// 复用这条已验签的直链，加 cover=1 把「音频流」换成「封面图」即可。
+	// 签名绑的是同一个绝对路径 + 文件大小，换文件 / 过期照样失效。
+	// 额外可带 w=<边长>（artwork 多尺寸，白名单见 coverSizes），只影响出图，
+	// 不参与签名；非法值会被服务端收敛成默认 640。
+	// placeholder=true：歌没内嵌封面时给一张通用专辑图，别让锁屏退回站点图标
+	if q.Get("cover") == "1" {
+		serveCoverFull(w, r, full, true)
 		return
 	}
 	log_LinkUse(r, full)

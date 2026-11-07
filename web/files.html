@@ -10,11 +10,29 @@
 <meta name="theme-color" content="#f7f7f5">
 <title>文件 · selfnas</title>
 <link rel="manifest" href="/assets/manifest.json">
+<link rel="icon" href="/assets/favicon.ico" sizes="any">
+<link rel="icon" href="/assets/icon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="/assets/icon-180.png">
-<link rel="icon" href="/assets/icon-192.png">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
 <body class="fs-body">
+
+<!-- 音乐模式的独立顶栏：音乐页有自己的 tabs / 搜索 / 曲库管理，
+     文件页那排盘符和「最近 / 收藏夹 / 上传」在这里一个都用不上，全藏掉，
+     只留一个回去的入口 —— 点「音乐」就像新开了一个页面，不再是一页里换了个区域。
+     显隐由 body.music-on 控制（style.css），高度进 --fs-head-h 供 mu-head 吸附。 -->
+<header class="mu-topbar" id="muTopbar">
+  <button class="icon-btn" id="muExit" title="返回文件">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+  </button>
+  <span class="mu-topbar-t">音乐</span>
+  <!-- 搜索框放最顶上：它对所有 tab 通用（歌手/专辑/曲目/收藏/歌单都能搜），
+       混在 tabs 那行里手机上挤成一团，单独占顶栏剩余宽度最舒服 -->
+  <div class="mu-search mu-topbar-search">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+    <input type="text" id="muSearch" placeholder="搜歌名 / 歌手 / 专辑">
+  </div>
+</header>
 
 <header class="fs-head">
   <!-- 盘符切换是「你在哪个盘」的唯一出处：标题行删掉了，这里选中项就是当前位置 -->
@@ -23,6 +41,7 @@
     <button class="chip" id="btnRecent">最近</button>
     <!-- 叫「收藏夹」而不是「收藏」：面包屑那个「☆ 收藏」是动作，这个是列表，同名会混 -->
     <button class="chip" id="btnFav">收藏夹</button>
+    <button class="chip" id="btnMusic">音乐</button>
     <!-- 排序：原来占独立一行「排序 名称↑ 时间」，手机上白吃 30px 高度。
          收成一个按钮，点一下循环切（名称↑ → 名称↓ → 时间↓ → 时间↑），当前状态写在文字里 -->
     <button class="icon-btn sort-btn" id="btnSort" title="切换排序">
@@ -68,6 +87,10 @@
 </div>
 
 <main class="fs-list" id="list"></main>
+
+<!-- 音乐页：把库里的曲目按歌手 / 专辑 / 全部 / 歌单组织起来。
+     整页由 files.js 渲染（结构跟着数据变），容器只负责占位 -->
+<main class="music-view" id="musicView" hidden></main>
 
 <div class="fs-uploadbox" id="uploadBox"></div>
 
@@ -123,17 +146,57 @@
   </div>
 </div>
 
+<div class="overlay" id="plPick">
+  <div class="modal">
+    <h3 id="plPickTitle">加入歌单</h3>
+    <div class="sub" id="plPickSub"></div>
+    <!-- 多选模式才显示：搜索 + 全选，从曲库里批量挑歌 -->
+    <div class="plpick-toolbar" id="plPickToolbar" hidden>
+      <input type="text" id="plPickSearch" placeholder="搜索歌曲 / 歌手 / 专辑">
+      <button class="btn sm" id="plPickAll">全选</button>
+    </div>
+    <div class="plpick-list" id="plPickList"></div>
+    <div class="field" id="plPickNewRow" style="margin-top:12px">
+      <label>或新建一个歌单</label>
+      <div style="display:flex;gap:8px">
+        <input type="text" id="plPickName" placeholder="新歌单名称" style="flex:1">
+        <button class="btn sm" id="plPickNew">创建并加入</button>
+      </div>
+    </div>
+    <div class="err" id="plPickErr"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="plPickCancel">取消</button>
+      <button class="btn primary" id="plPickOk" hidden>加入</button>
+    </div>
+  </div>
+</div>
+
 <div class="overlay" id="sheet">
   <div class="modal" style="max-width:360px">
     <h3 id="sheetTitle">操作</h3>
     <div class="sheet-btns">
       <button class="btn" data-act="fav">收藏</button>
       <button class="btn" data-act="download">下载到本机</button>
+      <button class="btn" data-act="cast">推到电视</button>
       <button class="btn" data-act="rename">重命名</button>
       <button class="btn" data-act="move">移动到…</button>
       <button class="btn danger" data-act="delete">删除</button>
     </div>
     <div class="modal-actions"><button class="btn ghost" id="sheetCancel">取消</button></div>
+  </div>
+</div>
+
+<!-- 推到电视：DLNA 设备选择。点一台就推，不用再按确认 -->
+<div class="overlay" id="castSheet">
+  <div class="modal" style="max-width:380px">
+    <h3>推到电视</h3>
+    <div id="castBody" class="cast-body">
+      <div class="cast-status" id="castStatus">正在找局域网里的电视…</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn ghost sm" id="castRefresh">重新扫描</button>
+      <button class="btn ghost" id="castCancel">取消</button>
+    </div>
   </div>
 </div>
 
@@ -165,16 +228,25 @@
 
 <div class="viewer" id="viewer">
   <div class="viewer-bar">
+    <!-- 收藏放顶栏最左，标题在顶栏正中（音频模式下按绝对居中处理，见 style.css） -->
+    <button class="icon-btn" id="viewerFav" title="收藏">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.6l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.6 9.7l5.8-.8z"/></svg>
+    </button>
     <span id="viewerName"></span>
     <div class="vb-act">
-      <button class="icon-btn" id="viewerFav" title="收藏">
-        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.6l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.6 9.7l5.8-.8z"/></svg>
-      </button>
       <button class="icon-btn" id="viewerRot" title="转 90°">
         <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>
       </button>
+      <!-- 推到电视：视频可见，音频藏（听歌推电视没意义） -->
+      <button class="icon-btn" id="viewerCast" title="推到电视">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 20h6"/><path d="M2 16a6 6 0 0 1 6 6"/><path d="M2 12a10 10 0 0 1 10 10"/><path d="M8 5h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-6"/></svg>
+      </button>
       <button class="icon-btn" id="viewerClose" title="关闭">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+      <!-- 收起放最靠屏幕角落：想收起的手指自然往右上角伸，别让它撞上「关闭」 -->
+      <button class="icon-btn" id="viewerMin" title="收起成迷你播放条" style="display:none">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
       </button>
     </div>
   </div>
@@ -186,6 +258,29 @@
       转 90° 铺满
     </button>
   </div>
+</div>
+
+<!-- 迷你播放条：全屏播放器收起后挂在页面底部，点中间回到全屏 -->
+<div class="mpmini" id="mpMiniBar">
+  <div class="mpmini-click" id="mpMiniExpand">
+    <span class="mpmini-art"><img id="mpMiniArt" alt=""><i><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V6.6l10-2v10.8"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="15.4" r="2.5"/></svg></i></span>
+    <span class="mpmini-main">
+      <b id="mpMiniTitle"></b>
+      <i id="mpMiniLy"></i>
+    </span>
+  </div>
+  <div class="mpmini-ctl">
+    <button class="mpmini-btn mpmini-mode" id="mpMiniLoop" title="顺序播放"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg></button>
+    <button class="mpmini-btn mpmini-mode" id="mpMiniShuffle" title="随机播放：关"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg></button>
+    <div class="mpmini-vol">
+      <button class="mpmini-btn mpmini-mode" id="mpMiniVol" title="音量"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z" fill="currentColor" stroke="none"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg></button>
+      <div class="mini-vol-pop" id="miniVolPop"><input id="mpMiniVolRange" type="range" min="0" max="100" value="100" aria-label="音量"></div>
+    </div>
+    <button class="mpmini-btn" id="mpMiniPrev" title="上一首"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M7 5h2.1v14H7zM19 5.8v12.4L9.9 12z"/></svg></button>
+    <button class="mpmini-btn primary" id="mpMiniPlay" title="播放/暂停"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M8.2 5.4v13.2L19 12z"/></svg></button>
+    <button class="mpmini-btn" id="mpMiniNext" title="下一首"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M14.9 5H17v14h-2.1zM5 5.8v12.4L14.1 12z"/></svg></button>
+  </div>
+  <button class="mpmini-btn mpmini-x" id="mpMiniClose" title="关闭播放器"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
 </div>
 
 <div id="login">
@@ -200,7 +295,35 @@
 </div>
 
 <input type="file" id="filePicker" class="vh" multiple>
+<!-- 曲库管理（仅管理员，从音乐页的齿轮进入） -->
+<div class="overlay" id="libMgr">
+  <div class="modal" style="max-width:420px">
+    <h3>曲库管理</h3>
+    <div class="sub" id="libMgrStat">—</div>
+    <div class="libmgr-list" id="libMgrList"></div>
+    <div class="field" style="margin-top:14px">
+      <label>添加目录（含子目录都会被扫描）</label>
+      <div class="browser" id="libMgrBrowse"></div>
+      <div class="libmgr-cur" id="libMgrCur">选择磁盘</div>
+      <button class="btn primary libmgr-add" id="libMgrAdd">把当前目录加入曲库</button>
+    </div>
+    <div class="err" id="libMgrErr"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="libMgrClose">关闭</button>
+      <button class="btn" id="libMgrScan">重新扫描</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
+
+<!-- 音频解码器：页面根部只保留一个 <audio>，UI（全屏/迷你条）只是它的一层视图。
+     绝不能放进会被 display:none 的 #viewer 里 —— Chrome/Firefox 会暂停隐藏容器里的音频。
+     ⚠️ 它会被 mpFreshAudio() 整体替换一次：开启 EQ 时 createMediaElementSource() 会把
+     元素**永久改道**到 Web Audio 图，而 iOS 最小化/切后台会把 AudioContext 置为
+     interrupted 并暂停媒体元素。收起/隐藏时必须换一个从未被接管的干净元素，
+     让播放回到系统原生管线（即「加 EQ 之前」那种能后台播放的状态）。 -->
+<audio id="mpAudio" preload="metadata" playsinline></audio>
 <script src="/assets/files.js"></script>
 </body>
 </html>

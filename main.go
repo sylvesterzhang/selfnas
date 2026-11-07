@@ -63,6 +63,12 @@ type Config struct {
 	SMB SmbConfig `json:"smb"`
 	// 受限账号：只能看到白名单文件夹的 SMB/WebDAV 账号（admin 不在这里，见 User/PassHash）。
 	ScopedAccounts []ScopedAccount `json:"scopedAccounts,omitempty"`
+	// 音乐库：管理台标记进库的文件夹（绝对路径）。不设 = 音乐页为空，文件站播放器不受影响。
+	MusicLibrary []string `json:"musicLibrary,omitempty"`
+	// 密码的 AES-GCM 密封副本（密钥由 Secret 派生），只为 Subsonic App 的
+	// md5(明文+salt) token 鉴权服务 —— PBKDF2/NT hash 都不可逆，算不出 token。
+	// 在任何知道明文密码的时刻写入：网页登录、改密码、建共享账号。
+	PassEnc string `json:"passEnc,omitempty"`
 }
 
 // DriveInfo 系统盘符信息（仅用于展示与首次生成默认配置）
@@ -81,6 +87,10 @@ var (
 	cfgMu     sync.Mutex
 	cfgPath   string
 	startedAt = time.Now()
+	// effPort = 本次真正监听的端口。`-p` 只影响它，**绝不写回 cfg.Port** ——
+	// 否则任何一次 saveConfig（比如网页登录时补 PassEnc）都会把这个一次性端口
+	// 固化进 config.json：用 -p 8899 起一次测试实例，下次裸启动就变成 8899 了（2026-11-06 踩过）。
+	effPort int
 )
 
 func main() {
@@ -108,14 +118,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("加载配置失败: %v", err)
 	}
+	effPort = cfg.Port
 	if port > 0 {
-		cfg.Port = port
+		effPort = port
 	}
 	if firstRun {
 		log.Printf("首次启动，已生成配置: %s", cfgPath)
 	}
 
-	addr := fmt.Sprintf("%s:%d", cfg.Bind, cfg.Port)
+	addr := fmt.Sprintf("%s:%d", cfg.Bind, effPort)
 	initCacheDir()
 	// 「最近 / 收藏」的库，默认放在 config.json 旁边（跟配置一起备份就完事）；
 	// 测试用 -db 指到别处，避免自动化脚本清场时把正式数据一起抹掉。
@@ -155,7 +166,7 @@ func main() {
 	if err != nil {
 		// 绑定失败。注意不能用 log.Fatalf：
 		// 双击启动时控制台窗口会随进程退出瞬间关闭，用户什么都看不见，只会觉得「程序坏了」。
-		printListenFail(cfg.Port, err)
+		printListenFail(effPort, err)
 		fmt.Print("按回车键退出…")
 		buf := make([]byte, 16)
 		// 服务场景（计划任务/S4U/Systemd）没有可交互的 stdin，这里会立刻返回，进程照常退出；
@@ -166,6 +177,10 @@ func main() {
 
 	// 端口已可连，现在才告诉用户地址
 	printBanner(firstRun)
+
+	// 常驻监听 SSDP 组播：电视/盒子一上线（主动广播）就进设备缓存，
+	// 用户点「推到电视」时列表里已经有它了 —— 很多国产盒子不应答 M-SEARCH，只能这么逮
+	dlnaListenStart()
 
 	// 读上次「检查更新」的缓存结果（检查本身是用户点按钮触发的，不自动查）
 	loadUpdateCache()
@@ -204,8 +219,8 @@ func printBanner(firstRun bool) {
 	if lan != "" {
 		lines = append(lines, "  局域网:  "+hostURL(lan, "/admin"))
 	}
-	if why := browserBlockedPort(cfg.Port); why != "" {
-		lines = append(lines, "  ⚠ 端口 "+itoa(cfg.Port)+" "+why+"，浏览器会直接拒绝访问（ERR_UNSAFE_PORT），请换端口")
+	if why := browserBlockedPort(effPort); why != "" {
+		lines = append(lines, "  ⚠ 端口 "+itoa(effPort)+" "+why+"，浏览器会直接拒绝访问（ERR_UNSAFE_PORT），请换端口")
 	}
 	lines = append(lines,
 		"  配置:    "+cfgPath,
@@ -788,6 +803,8 @@ func routes() http.Handler {
 
 	mux.HandleFunc("/api/login", handleLogin)
 	mux.HandleFunc("/api/logout", handleLogout)
+	// 身份自检：管理台先问一句再决定给不给看（共享账号 → 说明页，不是登录框）
+	mux.HandleFunc("/api/whoami", guardAuth(handleWhoami))
 	mux.HandleFunc("/api/state", guard(handleState))
 	mux.HandleFunc("/api/roots/add", guard(handleRootAdd))
 	mux.HandleFunc("/api/roots/rescan", guard(handleRootsRescan))
@@ -843,6 +860,9 @@ func routes() http.Handler {
 	mux.HandleFunc("/api/fs/cache/", guardAuth(handleFSCacheFile))
 	// 给外部播放器（VLC/Infuse/nPlayer）的短期签名直链 —— 它们自带解码器，MKV 直接播
 	mux.HandleFunc("/api/fs/link", guardAuth(handleFSLink))
+	mux.HandleFunc("/api/dlna/devices", guardAuth(handleDlnaDevices))
+	mux.HandleFunc("/api/dlna/play", guardAuth(handleDlnaPlay))
+	mux.HandleFunc("/api/dlna/stop", guardAuth(handleDlnaStop))
 	mux.HandleFunc("/f", handleSignedFile)
 	// WebDAV：让 iOS「文件」/安卓文件管理器/资源管理器直接挂载（后台传输，锁屏不断）
 	mountWebDAV(mux)
@@ -906,6 +926,24 @@ func routes() http.Handler {
 		}
 		handleLastOpenGet(w, r)
 	}))
+
+	// 音乐库：lib/scan/lastdir 管理口只有 admin（guard）；查询和歌单是登录用户自己的（guardAuth）
+	mux.HandleFunc("/api/music/lib", guard(handleMusicLib))
+	// 曲库挑目录：按账号可见范围过滤（管理员=启用的根，受限账号=白名单）
+	mux.HandleFunc("/api/music/browse", guardAuth(handleMusicBrowse))
+	mux.HandleFunc("/api/music/status", guardAuth(handleMusicStatus))
+	mux.HandleFunc("/api/music/scan", guard(handleMusicScan))
+	mux.HandleFunc("/api/music/artists", guardAuth(handleMusicArtists))
+	mux.HandleFunc("/api/music/albums", guardAuth(handleMusicAlbums))
+	mux.HandleFunc("/api/music/tracks", guardAuth(handleMusicTracks))
+	mux.HandleFunc("/api/music/playlist", guardAuth(handleMusicPlaylist))
+	mux.HandleFunc("/api/music/playlist/items", guardAuth(handleMusicPlaylistItems))
+	mux.HandleFunc("/api/music/fav", guardAuth(handleMusicFav))
+	// 管理台「手机 App 连接」卡片：地址推断 + admin 密码副本是否就绪
+	mux.HandleFunc("/api/music/appinfo", guard(handleSubsonicInfo))
+
+	// Subsonic 兼容层：/rest/<endpoint>。鉴权在协议内做（u/t/s/v 或 p），不走 cookie。
+	mux.HandleFunc("/rest/", handleSubsonic)
 
 	return withLogging(mux)
 }
@@ -984,8 +1022,15 @@ func guard(h http.HandlerFunc) http.HandlerFunc {
 			writeJSON(w, 403, "管理接口仅允许本机或 Tailscale 访问", nil)
 			return
 		}
-		if webUserOf(r) != cfg.User {
-			writeJSON(w, 401, "未登录", nil)
+		if u := webUserOf(r); u != cfg.User {
+			// 「没登录」和「登录了但不是管理员」必须分开报：
+			// 前端把 401 当「去登录」，共享账号就会陷入
+			// 「输一遍账号密码 → 又被弹回登录框」的死循环。
+			if u == "" {
+				writeJSON(w, 401, "未登录", nil)
+			} else {
+				writeJSON(w, 403, "这是管理员接口，共享账号用不了", nil)
+			}
 			return
 		}
 		h(w, r)

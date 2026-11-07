@@ -111,8 +111,51 @@ func migrateDB() error {
 			ts       INTEGER NOT NULL,
 			PRIMARY KEY (username)
 		)`,
+		// 音乐库：一张表存所有曲目，歌手/专辑聚合在 Go 里做（见 music.go）。
+		// 主键 (root, path) 与 recent/favorite 口径一致，播放时直接喂 /api/fs/download。
+		`CREATE TABLE IF NOT EXISTS music_track (
+			root         TEXT NOT NULL,
+			path         TEXT NOT NULL,
+			mtime        INTEGER NOT NULL,
+			size         INTEGER NOT NULL,
+			title        TEXT NOT NULL,
+			artist       TEXT NOT NULL DEFAULT '',
+			album_artist TEXT NOT NULL DEFAULT '',
+			album        TEXT NOT NULL DEFAULT '',
+			track_no     INTEGER NOT NULL DEFAULT 0,
+			disc_no      INTEGER NOT NULL DEFAULT 0,
+			year         INTEGER NOT NULL DEFAULT 0,
+			has_cover    INTEGER NOT NULL DEFAULT 0,
+			duration     REAL NOT NULL DEFAULT 0,
+			PRIMARY KEY (root, path)
+		)`,
+		// 歌单：按账号隔离；条目只存 root+path 引用，文件没了前端标「已失效」
+		`CREATE TABLE IF NOT EXISTS playlist (
+			id       INTEGER PRIMARY KEY AUTOINCREMENT,
+			username TEXT NOT NULL,
+			name     TEXT NOT NULL,
+			ts       INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS playlist_item (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			playlist_id INTEGER NOT NULL,
+			root        TEXT NOT NULL,
+			path        TEXT NOT NULL,
+			pos         INTEGER NOT NULL,
+			ts          INTEGER NOT NULL
+		)`,
+		// 歌曲收藏：音乐自己的收藏，跟文件站的 favorite 完全独立 ——
+		// 文件是文件收藏，歌曲是歌曲收藏，互不掺和
+		`CREATE TABLE IF NOT EXISTS music_fav (
+			username TEXT NOT NULL,
+			root     TEXT NOT NULL,
+			path     TEXT NOT NULL,
+			ts       INTEGER NOT NULL,
+			PRIMARY KEY (username, root, path)
+		)`,
 		`CREATE INDEX IF NOT EXISTS ix_recent_ts ON recent (username, ts DESC)`,
 		`CREATE INDEX IF NOT EXISTS ix_fav_ts ON favorite (username, ts DESC)`,
+		`CREATE INDEX IF NOT EXISTS ix_playlist_item ON playlist_item (playlist_id, pos)`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {

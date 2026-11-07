@@ -27,10 +27,10 @@ func qrHost() string {
 // hostURL 拼对外地址。80 是 http 默认端口，写出来只是噪音：
 // 手机地址栏里多一个 :80，用户还得怀疑自己是不是输错了
 func hostURL(host, path string) string {
-	if cfg.Port == 80 {
+	if effPort == 80 {
 		return fmt.Sprintf("http://%s%s", host, path)
 	}
-	return fmt.Sprintf("http://%s:%d%s", host, cfg.Port, path)
+	return fmt.Sprintf("http://%s:%d%s", host, effPort, path)
 }
 
 func accessURL(host string) string { return hostURL(host, "/files") }
@@ -50,7 +50,7 @@ func handleQRToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 0, "ok", map[string]any{
 		"url":         u,
 		"host":        host,
-		"port":        cfg.Port,
+		"port":        effPort,
 		"png":         "data:image/png;base64," + base64.StdEncoding.EncodeToString(png),
 		"lan":         lanIPv4(),
 		"tailscale":   tsIP,

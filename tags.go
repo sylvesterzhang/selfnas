@@ -28,6 +28,10 @@ type trackTag struct {
 	Album       string `json:"album"`
 	AlbumArtist string `json:"albumArtist"`
 	Track       int    `json:"track"`
+	// 下面三个只有音乐库扫描用（列表接口带上也无妨）：年份/碟号/有没有内嵌封面
+	Year     int  `json:"year"`
+	Disc     int  `json:"disc"`
+	HasCover bool `json:"hasCover"`
 }
 
 type tagEntry struct {
@@ -140,6 +144,9 @@ func readTrackTag(abs, name string, mtime, size int64) trackTag {
 			out.Album = fixTagEnc(m.Album())
 			out.AlbumArtist = fixTagEnc(m.AlbumArtist())
 			out.Track, _ = m.Track()
+			out.Disc, _ = m.Disc()
+			out.Year = m.Year()
+			out.HasCover = m.Picture() != nil && len(m.Picture().Data) > 0
 		}
 		_ = f.Close()
 	}

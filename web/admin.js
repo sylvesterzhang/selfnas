@@ -35,6 +35,12 @@ $('loginForm').addEventListener('submit', async (e) => {
   try {
     const r = await api('/api/login', { user: $('loginUser').value.trim(), pass: $('loginPass').value });
     if (r.code !== 0) { $('loginErr').textContent = r.msg; return; }
+    // 共享账号也能通过认证，但它进不了管理台：直接给说明页，别让它对着空面板
+    const who = await api('/api/whoami').catch(() => null);
+    if (!who || who.code !== 0 || !who.data || !who.data.admin) {
+      showNotAdmin(r.data && r.data.user);
+      return;
+    }
     hideLogin();
     await loadState();
     loadQr();          // 登录后才拿得到二维码和 WebDAV 地址，不补这一下概览页会一直「加载中…」
@@ -54,7 +60,7 @@ document.querySelectorAll('.nav button').forEach((b) => {
   b.addEventListener('click', () => switchTab(b.dataset.tab));
 });
 
-const TITLES = { overview: '概览', roots: '根目录', account: '账号安全', system: '系统设置', logs: '日志', about: '关于' };
+const TITLES = { overview: '概览', roots: '根目录', musiclib: '手机听歌', account: '账号安全', system: '系统设置', logs: '日志', about: '关于' };
 function switchTab(tab) {
   document.querySelectorAll('.nav button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.panel').forEach((p) => p.classList.toggle('on', p.id === 'panel-' + tab));
@@ -66,6 +72,7 @@ function switchTab(tab) {
   }
   if (tab === 'logs') loadLogs();
   if (tab === 'account') loadScoped();
+  if (tab === 'musiclib') loadMusicApp();
 }
 
 async function loadState() {
@@ -302,20 +309,22 @@ function paintAutostart(a) {
   note.textContent = txt;
 }
 
-// 复制一条自启命令到剪贴板（供每条命令的「复制」按钮复用）
-async function copyCmd(text) {
+// 复制一段文本到剪贴板。okMsg 让调用方换掉提示语（自启命令说「去终端粘贴」，
+// 服务器地址就是「去 App 里填」），不传按命令的老口径。
+async function copyCmd(text, okMsg) {
   if (!text) return;
+  const ok = okMsg || '命令已复制，去终端里粘贴执行';
   if (navigator.clipboard && window.isSecureContext) {
     try {
       await navigator.clipboard.writeText(text);
-      toast('命令已复制，去终端里粘贴执行');
+      toast(ok);
       return;
     } catch (e) { /* 落到 execCommand */ }
   }
   if (legacyCopy(text)) {
-    toast('命令已复制，去终端里粘贴执行');
+    toast(ok);
   } else {
-    toast('复制失败，请手动选中命令');
+    toast('复制失败，请手动选中' + (okMsg ? '' : '命令'));
   }
 }
 
@@ -460,8 +469,11 @@ $('btnAddOk').addEventListener('click', async () => {
 // 文件站皮肤：点卡片只改本地选中态，随「保存设置」一起提交。
 let selTheme = 'light';
 function paintTheme(t) {
-  // 旧版「跟随系统」(空值) 已取消，兜底亮色
   selTheme = t || 'light';
+  // 后台固定经典外观（深侧栏 + 设备蓝），不跟随文件站主题 ——
+  // 主题卡片管的是文件站的观感，后台是控制台，样式必须稳定：
+  // 无论选哪个主题，左边的深色侧边栏和这套面板语言都一动不动。
+  document.documentElement.setAttribute('data-theme', 'nas');
   document.querySelectorAll('#themeRow .theme-card').forEach((b) => {
     b.classList.toggle('on', b.dataset.theme === selTheme);
   });
@@ -660,6 +672,17 @@ let logTimer = setInterval(() => {
 // ---------- 启动 ----------
 
 (async function init() {
+  // 先认身份再干活：共享账号能登录成功，但管理接口一律 403。
+  // 不先问这一句，它会被 401 一路推回登录框 —— 输一遍又弹一次，等于进不去。
+  const who = await api('/api/whoami').catch(() => null);
+  if (!who || who.code !== 0) {
+    showLogin(); // 未登录（api 里遇到 401 已经把登录框弹出来了）
+    return;
+  }
+  if (!who.data.admin) {
+    showNotAdmin(who.data.user);
+    return;
+  }
   try {
     await loadState();
     loadQr();
@@ -674,6 +697,20 @@ let logTimer = setInterval(() => {
     }
   }, 5000);
 })();
+
+// 共享账号误入管理台：给一张说明卡，别让他对着空面板点。
+function showNotAdmin(user) {
+  hideLogin();
+  $('naSub').textContent = '这是管理台，只有管理员能进';
+  if (user) $('naSub').textContent += '（当前账号：' + user + '）';
+  $('notAdmin').classList.add('on');
+}
+
+$('naLogout').addEventListener('click', async () => {
+  await api('/api/logout', {}, 'POST').catch(() => {});
+  $('notAdmin').classList.remove('on');
+  showLogin();
+});
 
 // ---------- SMB（iPhone / iPad 的「文件」App 原生支持，WebDAV 不行） ----------
 // 交互刻意做得很轻：默认只显示一行状态；要开启时才露出密码框（
@@ -1012,3 +1049,43 @@ $('btnScopedFolderOk').addEventListener('click', async () => {
   toast(r.msg);
   loadScoped();
 });
+
+// ---------- 手机听歌（Subsonic）----------
+// 曲库目录的增删已经搬到文件站「音乐」页 —— 加哪个文件夹本来就是边听边决定的事，
+// 在管理台做等于让人来回跑。这里只剩「手机怎么连」。
+
+async function loadMusicApp() {
+  const app = await api('/api/music/appinfo');
+  if (app.code === 0) renderMusicApp(app.data);
+}
+
+// 「手机 App 连接」卡片：地址 + 复制按钮 + 密码副本是否就绪的提示。
+// 副本缺失时 App 会一路「账号或密码错误」，这是最容易卡住用户的点，必须写明白。
+let musicAppURL = '';
+
+function renderMusicApp(d) {
+  musicAppURL = d.url || '';
+  $('mlAppURL').textContent = musicAppURL || '—';
+  const hint = $('mlAppHint');
+  // 地址尾注：多数 App 自己拼 /rest，个别要填全路径。两种服务端都认，如实说清楚。
+  const tail = d.restURL
+    ? ` 有的 App 要求填完整路径，那就填 ${d.restURL}（带不带 /rest 都认）。`
+    : '';
+  if (!d.adminReady) {
+    hint.textContent = '还没生成 App 用的密码副本：先在网页上登录一次后台（或用管理台改一次密码），'
+      + '副本就会补上。Subsonic 的 token 鉴权要算 md5(明文+盐)，而库里只存不可逆的哈希。';
+    return;
+  }
+  // 受限账号是建号时就有副本；但老账号或手改过配置的会缺，缺了在 App 里只会显示密码错误
+  if (d.pending) {
+    hint.textContent = `有 ${d.pending} 个受限账号还没在网页上登录过，App 里用它们会报「账号或密码错误」——`
+      + '让本人先用浏览器登录一次，或者你在这儿给他重设一次密码。';
+    return;
+  }
+  hint.textContent = (d.scoped
+    ? `账号密码和网页登录一样；受限账号也能连，只能看到他白名单文件夹里的曲目（当前 ${d.scoped} 个受限账号）。`
+    : '账号密码和网页登录一样。') + tail;
+}
+
+$('mlAppCopy').addEventListener('click', () => copyCmd(musicAppURL, '地址已复制，去 App 的 Server / URL 里填'));
+

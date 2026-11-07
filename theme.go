@@ -6,10 +6,12 @@ package main
 // 曾经有过「跟随系统」（空值）选项，2026-11-01 用户拍板去掉：服务端就一套界面，
 // 「跟随」跟随不到任何东西，没有意义；旧配置里的空值在 normalizeConfig 里迁移为 light。
 //
-// 边界（讨论时定下的）：皮肤只动色调/字体/行距，不动布局；
-// 只作用于 files 页，管理台保持自己的简洁工具脸。
+// 边界（讨论时定下的）：皮肤只动色调/字体/行距，不动布局。
+// 历史上的皮肤只作用于 files 页，管理台保持自己的简洁工具脸。
+// nas（NAS 设备风）是例外：它靠「深色侧栏＝机壳」撑起设备感，管理台不跟着变
+// 就会一半像 NAS、一半像 SaaS，所以这套也套到管理台（见 admin.js 的 paintTheme）。
 
-var themeKeys = []string{"light", "blue", "pink", "ebook", "green", "dark"}
+var themeKeys = []string{"light", "blue", "pink", "ebook", "green", "dark", "nas"}
 
 func themeAllowed(t string) bool {
 	for _, k := range themeKeys {

@@ -55,6 +55,7 @@ func (f *ScopedFolder) UnmarshalJSON(b []byte) error {
 type ScopedAccount struct {
 	User    string         `json:"user"`
 	NTHash  string         `json:"ntHash"`  // hex(MD4(UTF-16LE(pass)))，见 ntHashOf
+	PassEnc string         `json:"passEnc,omitempty"` // Subsonic token 鉴权用的密封明文副本（同 admin）
 	Folders []ScopedFolder `json:"folders"` // 允许访问的文件夹 + 各自的读写权限，展示名取路径基名
 }
 
@@ -109,12 +110,15 @@ func scopedUpsert(user, pass string) error {
 	if strings.ContainsAny(user, `/\:"<>|?*`) {
 		return errScoped("用户名含非法字符")
 	}
+	// sealPass 会去拿 cfgMu，先算好再进 scopedMu，避免两把锁互相等
+	passEnc := sealPass(pass)
 	scopedMu.Lock()
 	defer scopedMu.Unlock()
 	for i := range cfg.ScopedAccounts {
 		if scopedNormalizeUser(cfg.ScopedAccounts[i].User) == key {
 			if pass != "" {
 				cfg.ScopedAccounts[i].NTHash = ntHashOf(pass)
+				cfg.ScopedAccounts[i].PassEnc = passEnc
 			}
 			_ = user
 			if err := scopedSave(); err != nil {
@@ -128,8 +132,9 @@ func scopedUpsert(user, pass string) error {
 		return errScoped("新账号必须设置密码")
 	}
 	cfg.ScopedAccounts = append(cfg.ScopedAccounts, ScopedAccount{
-		User:   user,
-		NTHash: ntHashOf(pass),
+		User:    user,
+		NTHash:  ntHashOf(pass),
+		PassEnc: passEnc,
 	})
 	if err := scopedSave(); err != nil {
 		return err

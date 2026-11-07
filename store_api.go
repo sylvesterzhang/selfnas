@@ -23,7 +23,9 @@ func currentUserOf(r *http.Request) string {
 }
 
 func decodeBody(r *http.Request, v any) bool {
-	if r.Method != http.MethodPost {
+	// PUT 也要收：歌单重命名/整列重写这些「更新」操作走 PUT（decodeBody 原先只认 POST，
+	// 导致 PUT handler 永远拿到 400 参数不完整）。
+	if r.Method != http.MethodPost && r.Method != http.MethodPut {
 		return false
 	}
 	return json.NewDecoder(r.Body).Decode(v) == nil

@@ -134,36 +134,25 @@ func fileKind(name string, isDir bool) string {
 
 // ---------- 接口 ----------
 
-func handleFSRoots(w http.ResponseWriter, r *http.Request) {
-	type item struct {
-		Name     string `json:"name"`
-		Path     string `json:"path"`
-		Drive    string `json:"drive"`
-		Readonly bool   `json:"readonly"`
-		FreeGB   string `json:"freeGB"`
-		TotalGB  string `json:"totalGB"`
-	}
-	var out []item
-	// 受限账号：白名单文件夹就是它的全部世界——每个文件夹当一个「根」下发，
-	// 前端逻辑完全复用（root 参数原样传回，resolveFor 只认这些路径）。
-	// 可写（与 SMB/WebDAV 受限账号同一口径），不能传只读否则前端会锁上传。
-	if user := webUserOf(r); scopedUserIsScoped(user) {
+// visibleRoots 返回这个账号「看得见」的根，是权限的唯一口径：
+//   - 管理员 = 配置里启用且磁盘还在的根
+//   - 受限账号 = 白名单文件夹（每个文件夹当一根，跟文件站根栏同构）
+//
+// 任何「挑一个文件夹」的界面都必须从它出发。曲库选目录当初直接调 /api/browse
+// （只认 admin、不做任何范围过滤），结果连没启用的 C: 都能被挑进曲库 —— 就是这个口子。
+func visibleRoots(user string) []Root {
+	var out []Root
+	if scopedUserIsScoped(user) {
 		folders, _ := scopedFoldersFor(user)
 		for real, disp := range scopedNameFor(folders) {
-			st, err := os.Stat(real)
-			if err != nil || !st.IsDir() {
+			if st, err := os.Stat(real); err != nil || !st.IsDir() {
 				continue // 文件夹没了就不列，别让整页挂掉
 			}
-			it := item{Name: disp, Path: real, Drive: driveOf(real), Readonly: scopedReadonlyFor(folders, real)}
-			if total, free := volumeSpace(real); total > 0 {
-				it.TotalGB = humanGB(total)
-				it.FreeGB = humanGB(free)
-			}
-			out = append(out, it)
+			out = append(out, Root{Name: disp, Path: real, Enabled: true, Readonly: scopedReadonlyFor(folders, real)})
 		}
-		// user 给前端用：受限账号要藏「管理台」入口（进去了也只有 401）
-		writeJSON(w, 0, "ok", map[string]any{"roots": out, "user": user, "theme": cfg.Theme})
-		return
+		// 白名单是 map，遍历顺序随机；排序让根栏每次刷新都长一个样
+		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+		return out
 	}
 	for _, rt := range cfg.Roots {
 		if !rt.Enabled {
@@ -172,10 +161,45 @@ func handleFSRoots(w http.ResponseWriter, r *http.Request) {
 		if st, err := os.Stat(rt.Path); err != nil || !st.IsDir() {
 			continue
 		}
+		out = append(out, rt)
+	}
+	return out
+}
+
+// pathWithin 判断 p 是否就是 base 或在 base 里面（大小写不敏感，Windows 用）。
+func pathWithin(base, p string) bool {
+	b, a := filepath.Clean(base), filepath.Clean(p)
+	if strings.EqualFold(a, b) {
+		return true
+	}
+	pre := b
+	if !strings.HasSuffix(pre, string(os.PathSeparator)) {
+		pre += string(os.PathSeparator)
+	}
+	return len(a) > len(pre) && strings.EqualFold(a[:len(pre)], pre)
+}
+
+func handleFSRoots(w http.ResponseWriter, r *http.Request) {
+	type item struct {
+		Name     string `json:"name"`
+		Path     string `json:"path"`
+		Drive    string `json:"drive"`
+		Readonly bool   `json:"readonly"`
+		// 展示用字符串（"12.5 TB"）；字节数给前端算用量比例 ——
+		// free/total 可能一个 GB 一个 TB，字符串 parse 出来比例是错的
+		FreeGB     string `json:"freeGB"`
+		TotalGB    string `json:"totalGB"`
+		FreeBytes  uint64 `json:"freeBytes"`
+		TotalBytes uint64 `json:"totalBytes"`
+	}
+	var out []item
+	for _, rt := range visibleRoots(webUserOf(r)) {
 		it := item{Name: rt.Name, Path: rt.Path, Drive: driveOf(rt.Path), Readonly: rt.Readonly}
 		if total, free := volumeSpace(rt.Path); total > 0 {
 			it.TotalGB = humanGB(total)
 			it.FreeGB = humanGB(free)
+			it.TotalBytes = total
+			it.FreeBytes = free
 		}
 		out = append(out, it)
 	}
@@ -287,6 +311,19 @@ func handleFSDownload(w http.ResponseWriter, r *http.Request) {
 	if !inline {
 		w.Header().Set("Content-Disposition",
 			"attachment; filename*=UTF-8''"+url.PathEscape(filepath.Base(full)))
+	}
+	// 音效 / 响度均衡：后端 ffmpeg 实时转码，前端只需普通 <audio>。ffmpeg 缺失 /
+	// 非音频 / 转码失败都会自动降级为原文件，播放绝不中断。
+	// 两个是独立开关：?eq=<预设> 调音色，&loud=1 统一响度，可任意叠加
+	//（缓存 key 带上两个维度：loud_<preset> / <preset>）。
+	ek, wantLoud := q.Get("eq"), q.Get("loud") == "1"
+	if (ek != "" && ek != "off") || wantLoud {
+		p := EQ_PRESETS["off"]
+		if ep, ok := EQ_PRESETS[ek]; ok {
+			p = ep
+		}
+		handleFSEQ(w, r, full, p, wantLoud)
+		return
 	}
 	// ServeFile 自带 Range / If-Range，手机可拖进度
 	http.ServeFile(w, r, full)
