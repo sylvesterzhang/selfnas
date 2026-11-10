@@ -654,3 +654,19 @@ SelfNAS 免费开源，**禁止倒卖**。任何人都不应该为这个软件�
 拿去用吧——商用、改造、闭源分发、打包进自己的产品，都行。
 
 唯一的要求：保留 `LICENSE` 里那段版权与许可声明。软件按「现状」提供，出了事别找我（MIT 原文的免责条款）。
+
+### 内置的 ffmpeg
+
+Windows / Linux / macOS 的发布包里都带了一份 ffmpeg，程序第一次要做音频处理或视频转封装时
+自动释放到 `cache/ffbundle-<平台>/`（约 0.2 秒，之后一直复用），所以**音效和「音量一致」开箱就能用**，
+不需要你另外安装，也不用装 Homebrew、不用配 PATH。
+
+这份 ffmpeg 来自 [ffmpeg-static](https://github.com/eugeneware/ffmpeg-static)（6.1.1 essentials 构建，
+GPL v3）。FFmpeg 版权归 [FFmpeg 项目](https://ffmpeg.org/) 所有，源码见
+<https://ffmpeg.org/download.html>，许可证全文见 <https://ffmpeg.org/legal.html>。
+它作为独立可执行文件随包分发，与 selfnas 自身的 MIT 许可相互独立。
+
+如果你自己装了更新版本的 ffmpeg，想用它的话，在 `config.json` 里把 `ffmpeg` 指到它的路径 ——
+这一项优先级最高。没有指定时用内置那份：版本固定、行为可预期，不会因为发行版仓库里
+装的是 4.x 老版本而出现「参数不认」的问题。系统 PATH 里那份只在没有内置包的平台（如 FreeBSD）才兜底生效。
+

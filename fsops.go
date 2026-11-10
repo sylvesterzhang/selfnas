@@ -286,6 +286,45 @@ func mustAbs(p string) string {
 	return a
 }
 
+// 网页播放器靠 Content-Type 挑解码器，跟 Subsonic 那边是同一个坑（见 subsonic.go 的 sxAudioFmt）：
+// 库里大量「.mp3」其实是 FLAC —— 音乐软件导出时常把 FLAC 直接改名成 .mp3，后缀与真身不一致。
+// 若按后缀报 audio/mpeg，iOS Safari 会拿 mp3 解析器去解 FLAC：mp3 是自同步格式，
+// 解不出来**不报错**，只是不再有 PCM 输出 —— 表现为「播到某个位置进度条不动、
+// 按钮却还是播放状态」，只能退出重开。所以这里一律按文件头吐真实容器。
+// 判据复用 sxProbeAudio，保证与 Subsonic / WebDAV 的口径完全一致。
+type audioCtEntry struct {
+	size, mtime int64
+	ct          string
+}
+
+var audioCtCache sync.Map // key: 绝对路径
+
+func realAudioType(full string, st os.FileInfo) string {
+	if v, ok := audioCtCache.Load(full); ok {
+		e := v.(audioCtEntry)
+		if e.size == st.Size() && e.mtime == st.ModTime().UnixNano() {
+			return e.ct
+		}
+	}
+	_, ct := sxProbeAudio(full, full)
+	audioCtCache.Store(full, audioCtEntry{st.Size(), st.ModTime().UnixNano(), ct})
+	return ct
+}
+
+// serveFileHonest 是「原样返回文件」的统一出口：音频先钉住真实 Content-Type，
+// 其余交给 ServeFile（Range / If-Range 全在它手里）。
+// eq.go 里所有「降级回原文件」的分支都走这里 —— 尤其 ffmpeg 缺失时的降级，
+// 那条路最常见（Linux 机器上没装 ffmpeg 就必然走它），不修就等于没修。
+func serveFileHonest(w http.ResponseWriter, r *http.Request, full string) {
+	if st, err := os.Stat(full); err == nil && !st.IsDir() &&
+		fileKind(filepath.Base(full), false) == "audio" {
+		if ct := realAudioType(full, st); ct != "" {
+			w.Header().Set("Content-Type", ct)
+		}
+	}
+	http.ServeFile(w, r, full)
+}
+
 func handleFSDownload(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	full, rt, err := resolveFor(webUserOf(r), q.Get("root"), q.Get("path"))
@@ -325,7 +364,13 @@ func handleFSDownload(w http.ResponseWriter, r *http.Request) {
 		handleFSEQ(w, r, full, p, wantLoud)
 		return
 	}
-	// ServeFile 自带 Range / If-Range，手机可拖进度
+	// ServeFile 自带 Range / If-Range，手机可拖进度。
+	// 音频先按真身钉住 Content-Type（ServeFile 只在没设时才按后缀猜，设了就用我们的）。
+	if fileKind(filepath.Base(full), false) == "audio" {
+		if ct := realAudioType(full, st); ct != "" {
+			w.Header().Set("Content-Type", ct)
+		}
+	}
 	http.ServeFile(w, r, full)
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -100,12 +101,24 @@ func findFF() (string, string) {
 			break
 		}
 	}
+	// 内置分发：用包体积换「装上就能用」，不联网、不装系统包、不配 PATH。
+	// 放在系统 PATH 之前 —— 内置的是 8.x，比发行版仓库里那些 4.x/5.x 稳，
+	// 而 loudnorm 这类滤镜的参数逐版本在变，版本越旧越容易炸。
+	if ffmpegBin == "" {
+		if p := ffReleaseBundled(); p != "" {
+			ffmpegBin = p
+		}
+	}
 	if ffmpegBin == "" {
 		if p, err := exec.LookPath("ffmpeg"); err == nil {
 			ffmpegBin = p
-			if pp, err2 := exec.LookPath("ffprobe"); err2 == nil {
-				ffprobeBin = pp
-			}
+		}
+	}
+	// ffprobe 是独立的可选件（内置包里没有，见 ffbundle.go）：只影响视频转封装
+	// 前「能不能 copy」的判断，没有时 probeCodecs 会退回用 ffmpeg -i 解析。
+	if ffprobeBin == "" {
+		if pp, err := exec.LookPath("ffprobe"); err == nil {
+			ffprobeBin = pp
 		}
 	}
 	if ffmpegBin != "" {
@@ -119,9 +132,12 @@ func findFF() (string, string) {
 // probeCodecs 取第一条视频流和第一条音频流的编码名。
 // 只为了决定「能不能 copy」——探不出来就返回空，调用方按「需要转」处理。
 func probeCodecs(file string) (vcodec, acodec string) {
-	_, probe := findFF()
+	ff, probe := findFF()
 	if probe == "" {
-		return "", ""
+		// 内置包里不带 ffprobe（省 30MB，见 ffbundle.go），
+		// 那就用 ffmpeg -i 从 stderr 里抠流信息 —— 同样能判断「能不能 copy」，
+		// 比「探不到就一律真转码」划算得多。
+		return probeCodecsViaFFmpeg(ff, file)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -158,6 +174,36 @@ func probeCodecs(file string) (vcodec, acodec string) {
 		case "audio":
 			if acodec == "" {
 				acodec = codec
+			}
+		}
+	}
+	return vcodec, acodec
+}
+
+// ffmpeg -i 的流信息行长这样：
+//   Stream #0:0(und): Video: hevc (Main), yuv420p, 1920x1080, 23.98 fps
+//   Stream #0:1(und): Audio: aac (LC), 48000 Hz, stereo, fltp
+// 中间括号里的语言标签可能没有，也可能被换成 [0x1] 这类 stream id，所以用 [^:]* 吃掉。
+var streamLineRe = regexp.MustCompile(`Stream #\d+:\d+[^:]*: (Video|Audio): ([A-Za-z0-9_]+)`)
+
+func probeCodecsViaFFmpeg(ff, file string) (vcodec, acodec string) {
+	if ff == "" {
+		return "", ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// 「只给 -i 不给输出」ffmpeg 必然返回非 0 退出码，这不算失败：
+	// 我们要的流信息全在 stderr 里，已经拿到了。
+	out, _ := exec.CommandContext(ctx, ff, "-hide_banner", "-i", file).CombinedOutput()
+	for _, m := range streamLineRe.FindAllStringSubmatch(string(out), -1) {
+		switch m[1] {
+		case "Video":
+			if vcodec == "" {
+				vcodec = m[2]
+			}
+		case "Audio":
+			if acodec == "" {
+				acodec = m[2]
 			}
 		}
 	}

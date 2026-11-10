@@ -55,15 +55,39 @@ def build(goos, goarch, out, v):
     subprocess.run(cmd, check=True, env=env)
 
 
+# 内置 ffmpeg 的压缩资产不在版本库里（三平台约 117MB），编译前必须先准备好，
+# 否则 go:embed 找不到文件会直接编译失败。缺了就在这里自动补。
+FFBUNDLE_PLATS = {
+    ('windows', 'amd64'): 'windows-amd64',
+    ('linux', 'amd64'): 'linux-amd64',
+    ('linux', 'arm64'): 'linux-arm64',
+    ('darwin', 'amd64'): 'darwin-amd64',
+    ('darwin', 'arm64'): 'darwin-arm64',
+}
+
+
+def ensure_ffbundle(targets):
+    missing = []
+    for goos, goarch in targets:
+        plat = FFBUNDLE_PLATS.get((goos, goarch))
+        if plat and not os.path.exists(os.path.join('assets', 'ffmpeg', plat, 'ffmpeg.zst')):
+            missing.append(plat)
+    if not missing:
+        return
+    print('缺少内置 ffmpeg 资产: %s' % ', '.join(missing))
+    print('开始准备（首次需要下载官方构建，约 400MB，几分钟）...')
+    subprocess.run([sys.executable, 'scripts/make_ffbundle.py'], check=True)
+
+
 def main():
     v = version()
     only = sys.argv[1].lower() if len(sys.argv) > 1 else ''
     os.makedirs(DIST, exist_ok=True)
+    targets = [(g, a) for g, a in TARGETS if not only or only in (g, f'{g}-{a}', a)]
+    ensure_ffbundle(targets)
 
     print(f'版本 {v}')
-    for goos, goarch in TARGETS:
-        if only and only not in (goos, f'{goos}-{goarch}', goarch):
-            continue
+    for goos, goarch in targets:
         name = f'selfnas-{v}-{goos}-{goarch}' + ('.exe' if goos == 'windows' else '')
         build(goos, goarch, os.path.join(DIST, name), v)
         # 同时把 Windows 版放到项目根，方便本地直接双击

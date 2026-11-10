@@ -421,13 +421,13 @@ func eqCacheEvict() {
 // 我们把字节偏移线性换回时间点，用 -ss 从那儿重转一小段。误差上限一个帧（26ms）。
 func handleFSEQ(w http.ResponseWriter, r *http.Request, full string, p EQPreset, loud bool) {
 	if fileKind(filepath.Base(full), false) != "audio" {
-		http.ServeFile(w, r, full)
+		serveFileHonest(w, r, full)
 		return
 	}
 	ff, _ := findFF()
 	if ff == "" {
 		log.Printf("[EQ] 没找到 ffmpeg，跳过处理直接原样返回（播放不中断）: %s", full)
-		http.ServeFile(w, r, full)
+		serveFileHonest(w, r, full)
 		return
 	}
 	st, err := os.Stat(full)
@@ -443,17 +443,17 @@ func handleFSEQ(w http.ResponseWriter, r *http.Request, full string, p EQPreset,
 	chain, cerr := eqFilterChain(ff, full, st, p, loud)
 	if cerr != nil {
 		log.Printf("[EQ] 组装滤波链失败，原样返回: %v", cerr)
-		http.ServeFile(w, r, full)
+		serveFileHonest(w, r, full)
 		return
 	}
 	if chain == "" { // 原声：压根不用转
-		http.ServeFile(w, r, full)
+		serveFileHonest(w, r, full)
 		return
 	}
 	dur := eqDuration(ff, full, st)
 	if dur <= 0 {
 		log.Printf("[EQ] 读不到时长，退化成原样返回: %s", full)
-		http.ServeFile(w, r, full)
+		serveFileHonest(w, r, full)
 		return
 	}
 	// 后台补成品：这次听完，下次（哪怕换设备）直接 ServeFile
