@@ -1,29 +1,54 @@
 <p align="center"><img src="docs/wordmark.png" alt="SelfNAS" width="330"></p>
 
-**把一台电脑变成你自己的文件中心 —— 顺便变成你自己的音乐库。** 一个 15 MB 的二进制，不装数据库、不装 Docker、不需要 cgo；手机扫码就能用，不用装 App。
+**把自己的硬盘变成私人音乐库，顺便变成自己的文件中心。** 一个 40 MB 出头的单文件二进制：不装数据库、不装 Docker、不需要 cgo，连 ffmpeg 都内置好了；手机扫码就能用，不用装 App。
 
-文件全留在自己机器上 —— 不经过任何网盘、不经过任何第三方服务器。
+歌和文件全留在自己机器上 —— 不经过任何网盘、不经过任何第三方服务器。
 
 <img src="docs/screenshots/hero.png" alt="躺床上用手机看电脑里的电影">
 
 <table>
 <tr>
+<td width="20%" align="center"><b>听自己的歌</b><br><sub>无损就是无损，不上传</sub></td>
 <td width="20%" align="center"><b>手机看片</b><br><sub>4K MKV 不转码，点开秒播</sub></td>
 <td width="20%" align="center"><b>照片回传</b><br><sub>断了接着传，只补缺口</sub></td>
 <td width="20%" align="center"><b>随手翻盘</b><br><sub>几块硬盘，一个入口</sub></td>
-<td width="20%" align="center"><b>听自己的歌</b><br><sub>无损就是无损，不上传</sub></td>
 <td width="20%" align="center"><b>数据不出门</b><br><sub>没有云，没有账号体系</sub></td>
 </tr>
 </table>
+
+## 音乐：硬盘就是曲库
+
+这是这个项目最花心思的部分，也是很多人真正每天在用的功能。
+
+把放音乐的文件夹在音乐页右上角标一下，曲库就有了 —— 不用上传到任何地方，不用转码，不用再单独装一套 Navidrome / Emby。网页打开就能听，手机原生 App 也能连上来。**原文件直出，无损就是无损**。
+
+<img src="docs/screenshots/music.png" alt="曲库列表与 Hi-Res 标记">
+
+<sub>按歌手 / 专辑 / 全部曲目 / 收藏 / 歌单组织；全部曲目顶上还有一排曲库文件夹筛选条。歌名后面那枚小标是<b>读文件头</b>判出来的真规格：位深 ≥ 24 bit 或采样率 &gt; 48 kHz 标 Hi-Res，无损容器但只有 CD 规格标「无损」。<b>不看扩展名</b> —— 我库里三百多个 <code>.mp3</code> 其实是 FLAC，下载器给改的名。</sub>
+
+<img src="docs/screenshots/player-music.png" alt="全屏播放页">
+
+<sub>黑胶、歌词、底部控件都是自己画的：封面从标签里抠（没有就看同目录的 <code>cover.jpg</code>），歌词优先取同名 <code>.lrc</code>，没有再读标签里内嵌的。左上「音量一致」和右上「音效」是两个独立开关，切了会换一条流重新拉，进度接着走。</sub>
+
+- **无损直出，不转码**：播的就是硬盘上那个文件，码率和位深一个 bit 都不动
+- **iPhone 上也稳**：FLAC 装成 `.mp3` 也按真实容器类型下发，iOS 不会拿 mp3 解码器去解 FLAC 而「静音卡死」；真断流了前端会自己发现，断点重连接着放
+- **锁屏 / 切后台不断**：前端就是一个普普通通的 `<audio>`，没有 Web Audio；歌名、封面、上一首 / 下一首交给系统锁屏
+- **点歌不打断浏览**：点一行先在底部迷你条里播，你可以接着翻列表；想细看再点开全屏
+- **音效与音量一致**：五档预设 + 独立开关，滤波在服务端算 —— 于是 iOS 最小化也不会停；**安装包里已内置 ffmpeg**，不装也能用
+- **原生 App 也能连**：同端口的 Subsonic 兼容层，Substreamer / play:Sub / DSub 直连，歌单和网页共用一张表
+
+> 细节（曲库增量扫描、边转边发、按字节换算拖进度、缓存淘汰…）都写在下面的 [特性](#特性) 里。
+
+---
 
 ## 它解决什么问题
 
 家里那台常年开机的电脑，硬盘里存着几个 T 的电影、几万张照片、一堆资料。
 
+- 想听的歌**在自己硬盘里**（无损、整轨、Live 版、冷门现场），音乐 App 上没有，或者要会员 —— 又不想再装一套 Navidrome；
 - 想**躺床上用手机看**里面的电影 —— 拷到手机太麻烦，装一整套 Emby / Jellyfin 又太重，还常被 MKV 播不了卡住；
 - **手机拍的照片和视频**想传回电脑，用大屏剪片、修图，比在手机上顺手得多；
-- 有时候只是想在手机上**随手翻一下某个盘里的文件**，不想开远程桌面；
-- 想听的歌**在自己硬盘里**（无损、整轨、Live 版），音乐 App 上没有，或者要会员 —— 又不想再装一套 Navidrome。
+- 有时候只是想在手机上**随手翻一下某个盘里的文件**，不想开远程桌面。
 
 SelfNAS 就干这几件事：打开网页就能用，扫码就登录，手机上什么都不用装；听歌可以只用网页，也可以用任意 Subsonic App 连上来。
 
@@ -52,18 +77,6 @@ SelfNAS 就干这几件事：打开网页就能用，扫码就登录，手机上
 <img src="docs/screenshots/recent.png" alt="最近">
 
 <sub>「最近」记的是文件，点一条就跳到它所在的目录、高亮那一行、然后打开它。「收藏」文件和文件夹都能收。两者都存在服务端，跟着账号走。</sub>
-
-### 音乐
-
-顶栏的「音乐」就是硬盘曲库本身 —— 点一首就播，黑胶转起来，歌词跟着走。
-
-<img src="docs/screenshots/music.png" alt="曲库列表与 Hi-Res 标记">
-
-<sub>按歌手 / 专辑 / 全部曲目 / 收藏 / 歌单组织；全部曲目顶上还有一排曲库文件夹筛选条。歌名后面那枚小标是<b>读文件头</b>判出来的真规格：位深 ≥ 24 bit 或采样率 &gt; 48 kHz 标 Hi-Res，无损容器但只有 CD 规格标「无损」。<b>不看扩展名</b> —— 我库里三百多个 <code>.mp3</code> 其实是 FLAC，下载器给改的名。</sub>
-
-<img src="docs/screenshots/player-music.png" alt="全屏播放页">
-
-<sub>黑胶、歌词、底部控件都是自己画的：封面从标签里抠（没有就看同目录的 <code>cover.jpg</code>），歌词优先取同名 <code>.lrc</code>，没有再读标签里内嵌的。左上「音量一致」和右上「音效」是两个独立开关，切了会换一条流重新拉，进度接着走。</sub>
 
 ### 分享
 
@@ -255,7 +268,7 @@ python scripts/build.py      # 只编 Windows 就 python scripts/build.py window
 python scripts/release.py    # 打成 zip / tar.gz + SHA256SUMS，产物在 dist/
 ```
 
-发布用的二进制走 `-trimpath -ldflags "-s -w"`，20 MB 压到 15 MB 左右。版本号只写在 `main.go` 的 `const version` 一处，两个脚本都会去读它。
+发布用的二进制走 `-trimpath -ldflags "-s -w"`。体积的大头是**内置的 ffmpeg**（五平台各一份，压缩后 20~25 MB）：不带它约 15 MB，带上之后 Windows / Linux 约 40 MB、macOS 约 36 MB。版本号只写在 `main.go` 的 `const version` 一处，两个脚本都会去读它。
 
 > 前端是 `//go:embed` 打进二进制的：**改完 `web/` 里的 CSS / JS 必须重新 `go build`**，只刷新页面看到的永远是旧样式。
 
