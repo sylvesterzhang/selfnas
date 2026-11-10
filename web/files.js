@@ -879,6 +879,9 @@ const MP = {
   // trackSeq：每换一首歌 +1。mpRestore / 刷新恢复都是异步的，靠它防止把上一首的
   // 进度贴到下一首。guardSeq：主动暂停 / 关播放器后作废还没跑的补播定时器。
   trackSeq: 0, guardSeq: 0,
+  // 卡顿自愈用：recoverTo > 0 表示这次 loadedmetadata 是「重连」触发的，
+  // 要跳回这个位置而不是从头播。剩下两个只是给 watchdog 做判断用的临时值。
+  recoverTo: 0, lastCt: 0, stillSince: 0, lastRetry: 0,
 };
 
 // 播放器图标：走 SVG 不用字符 —— ⏮ / ⏭ 这种符号在不同系统上字形差很多，
@@ -1117,6 +1120,14 @@ function mpBindAudioEl(el) {
     }
     mpSeekSync();
     mpMsReset(); mpMsPosition(true);   // 时长刚已知，通知栏进度条从新歌 0 开始
+    // 卡顿重连刚回来的：跳回断点。必须放在最后 —— 上面「切歌一律从头」那条
+    // 会把 currentTime 清成 0，顺序反了就变成从头放。
+    if (MP.recoverTo > 0) {
+      const r = MP.recoverTo;
+      MP.recoverTo = 0;
+      try { a.currentTime = r; } catch (err) {}
+      mpSyncLyric(r, true);
+    }
   });
   a.addEventListener('timeupdate', () => {
     // 关掉播放器的瞬间元素还会甩出最后一两个 timeupdate，那时 MP.el 已置空
@@ -1138,6 +1149,53 @@ function mpBindAudioEl(el) {
     MP.startingPlay = false; mpPaintBtn(); mpSave(false); mpSessionSave();
     mpMsState('paused'); mpMsPosition(true);
   });
+  mpStallWatch();
+}
+
+// ---- 卡顿自愈 ----------------------------------------------------------------
+// Safari / iOS 偶发：流在半路断了，它既不派发 error 也不 ended，readyState 卡在
+// HAVE_METADATA 以下不再变 —— 界面就成了用户说的「进度条不动、按钮还是播放态，
+// 又不能接着听，只能退出去重开」。服务端这时候是好的（日志里没有新请求，因为
+// 浏览器自己不再要数据了），所以客户端必须自己发现并重连。
+// 判据故意用「currentTime 连续 N 秒一点没动」而不是 readyState：后者在缓冲中
+// 和真卡死时是一样的值，分不出来。
+function mpReconnect() {
+  const a = MP.el;
+  if (!a || !MP.on) return;
+  let base = a.src || '';
+  if (!base) return;
+  const at = a.currentTime || 0;
+  // 去掉上一次重连加的防缓存参数，避免每重连一次 URL 就长一截
+  base = base.replace(/[?&]_r=\d+/g, '').replace(/[?&]$/, '');
+  MP.recoverTo = at;
+  a.src = base + (base.indexOf('?') >= 0 ? '&' : '?') + '_r=' + Date.now();
+  try { a.load(); } catch (e) {}
+  // 后台（锁屏 / 切标签）没有手势，play() 会被 iOS 直接拒 —— 那就不折腾，
+  // 回到前台由 mpGlobalInit 的 arm() 统一补播。
+  a.play().catch(() => {});
+  clog('播放卡住（' + at.toFixed(1) + 's），已自动重连');
+  toast('播放中断，正在自动重连');
+}
+
+function mpStallWatch() {
+  setInterval(() => {
+    const a = MP.el;
+    if (!MP.on || !a || a.paused || a.ended || !a.src || document.hidden) {
+      MP.stillSince = 0; MP.lastCt = -1; return;
+    }
+    const now = Date.now();
+    if (Math.abs(a.currentTime - MP.lastCt) > 0.25) {
+      // 进度在走 = 正常播放，把计时器清零
+      MP.lastCt = a.currentTime; MP.stillSince = 0; return;
+    }
+    if (!MP.stillSince) { MP.stillSince = now; return; }
+    // 8 秒不动才算卡死；同一首最多 30 秒重连一次，别把真慢的网络连成风暴
+    if (now - MP.stillSince < 8000 || now - MP.lastRetry < 30000) return;
+    // readyState 够高说明是「播到一半用户拖了下进度」，不是断流
+    if (a.readyState >= 3) { MP.stillSince = 0; return; }
+    MP.lastRetry = now; MP.stillSince = 0;
+    mpReconnect();
+  }, 2000);
 }
 mpBindAudioEl();
 
@@ -3374,13 +3432,37 @@ $('btnLogoutFs').addEventListener('click', async () => {
 
 // 桌面端拖拽上传：把文件从资源管理器拖进页面，松手就传，复用同一套分片队列。
 // 手机上不存在拖拽事件，这段代码在手机端等于不存在。
+// 提示只给第一次打开的桌面用户看；「知道了」写在当前浏览器的 localStorage，之后永久不再出现。
+(function initDragUploadTip() {
+  const tip = $('dragUploadTip');
+  const close = $('dragUploadTipClose');
+  if (!tip || !close) return;
+  const key = 'sn_drag_upload_tip_v1';
+  try {
+    if (localStorage.getItem(key) === '1') tip.remove();
+  } catch (e) { /* 隐私模式读不到时仍显示提示 */ }
+  close.addEventListener('click', () => {
+    try { localStorage.setItem(key, '1'); } catch (e) {}
+    tip.remove();
+  });
+})();
+
 (function initDragDrop() {
   const hint = document.createElement('div');
   hint.className = 'drop-hint';
   hint.innerHTML = '<div class="drop-hint-box">松手即可上传到当前目录</div>';
   document.body.appendChild(hint);
   let depth = 0;      // 子元素会连续触发 enter/leave，用计数避免提示闪
-  const hasFile = (e) => !!(e.dataTransfer && Array.from(e.dataTransfer.types || []).indexOf('Files') >= 0);
+  const transferOf = (e) => e && e.dataTransfer;
+  const hasFile = (e) => {
+    const dt = transferOf(e);
+    if (!dt) return false;
+    // Chromium 是 "Files"；Firefox/LibreWolf（尤其 Linux）可能给出
+    // application/x-moz-file，或者只在 items 里暴露 kind=file。
+    const types = Array.from(dt.types || []).map((x) => String(x).toLowerCase());
+    return types.indexOf('files') >= 0 || types.indexOf('application/x-moz-file') >= 0 ||
+      Array.from(dt.items || []).some((it) => it.kind === 'file');
+  };
   window.addEventListener('dragenter', (e) => {
     if (!hasFile(e)) return;
     depth++;
@@ -3389,6 +3471,7 @@ $('btnLogoutFs').addEventListener('click', async () => {
   window.addEventListener('dragover', (e) => {
     if (!hasFile(e)) return;
     e.preventDefault();   // 不拦的话浏览器会直接打开文件
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
   });
   window.addEventListener('dragleave', () => {
     depth = Math.max(0, depth - 1);
@@ -3397,18 +3480,31 @@ $('btnLogoutFs').addEventListener('click', async () => {
   window.addEventListener('drop', (e) => {
     if (!hasFile(e)) return;
     e.preventDefault();
+    e.stopPropagation();
     depth = 0;
     hint.classList.remove('on');
     if (S.readonly) { toast('该目录为只读'); return; }
-    const files = e.dataTransfer && e.dataTransfer.files;
-    if (files && files.length) handleFiles(files, 'drop');
+    const dt = transferOf(e);
+    const files = dt && dt.files;
+    if (files && files.length) {
+      handleFiles(files, 'drop');
+    } else {
+      // 有些 Firefox 拖拽事件 types/items 能识别出文件，但 files 延迟为空。
+      // 这里明确提示，不让用户以为已经开始上传。
+      toast('没有读取到文件，请重新拖入后再松手');
+      clog('拖拽事件识别到文件，但 DataTransfer.files 为空');
+    }
   });
 })();
 
 let lastHandledSig = '';
 let lastHandledAt = 0;
 
-function handleFiles(files, via) {
+function handleFiles(fileList, via) {
+  // ⚠️ 拖拽路径传来的是 FileList（有 .length，没有 .map/.filter/forEach），
+  // 选择器路径传来的是数组 —— 这里必须先统一成数组，否则拖拽第一行就抛
+  // "files.map is not a function"，上传静默失败（0.19.5 起一直如此，2026-11-09 用户抓到）。
+  const files = Array.from(fileList || []);
   if (!files.length) {
     clog('选文件回调[' + via + '] 拿到 0 个文件');
     return;
@@ -4985,6 +5081,7 @@ async function openLibMgr() {
 async function libMgrLoad() {
   const [lib, st] = await Promise.all([api('/api/music/lib'), api('/api/music/status')]);
   const list = $('libMgrList');
+  MU.libDirs = null;   // 目录增减过，筛选条那份缓存作废（下次画 chips 会重新拉）
   if (lib.code !== 0) {
     $('libMgrStat').textContent = lib.msg || '读取失败';
     list.innerHTML = '';
@@ -5545,6 +5642,7 @@ let plPickMode = 'target';
 let plPickTracks = [];
 let plPickSel = new Set();      // 已勾选的 root|path
 let plPickExist = new Set();    // 已经在歌单里的 root|path（置灰不可选）
+let plPickRoot = '';            // 文件夹筛选：'' = 全部，否则是某个曲库目录（跟全部曲目的 rootFilter 一个口径）
 let plPickSearchTimer = 0;
 
 function openPlPick(t) {
@@ -5557,14 +5655,19 @@ function openPlPick(t) {
   $('plPickOk').hidden = true;
   $('plPickName').value = '';
   $('plPickErr').textContent = '';
+  // 选歌单模式没有列表筛选，把筛选条收掉（上一次开多选模式留下的）
+  const pf = $('plPickFilter');
+  pf.hidden = true;
+  pf.innerHTML = '';
   $('plPick').classList.add('on');
   loadPlPick();
 }
 
 // 歌单详情的「＋ 加歌」：多选曲库 → 一次性加进当前歌单
-function openPlPickTracks(items) {
+async function openPlPickTracks(items) {
   plPickMode = 'tracks';
   plPickSel = new Set();
+  plPickRoot = '';
   // 已在歌单里的标出来，防止重复加
   plPickExist = new Set((items || []).map((x) => x.root + '|' + x.path));
   $('plPickTitle').textContent = '加歌到「' + MU.plName + '」';
@@ -5575,6 +5678,8 @@ function openPlPickTracks(items) {
   $('plPickSearch').value = '';
   $('plPickErr').textContent = '';
   $('plPick').classList.add('on');
+  await muLibDirsLoad();      // 曲库目录（跟全部曲目共用缓存，拉过一次就有）
+  renderPlPickFilter();
   loadPlPickTracks();
 }
 
@@ -5603,9 +5708,33 @@ $('plPickOk').addEventListener('click', async () => {
   muLoad();
 });
 
+// 加歌弹框的文件夹筛选条：跟「全部曲目」那排 chips 一个口径（第一个「全部」）。
+// 单独一块 DOM、不塞进列表 —— 列表空态会整个 innerHTML 覆盖，塞进去会被抹掉。
+function renderPlPickFilter() {
+  const box = $('plPickFilter');
+  const dirs = MU.libDirs || [];
+  if (plPickMode !== 'tracks' || !dirs.length) { box.hidden = true; box.innerHTML = ''; return; }
+  const btn = (v, label) =>
+    '<button class="chip mu-fchip' + (plPickRoot === v ? ' on' : '') + '" data-plroot="' + esc(v) + '">' + esc(label) + '</button>';
+  box.innerHTML = btn('', '全部') + dirs.map((x) => btn(x.path, x.name)).join('');
+  box.hidden = false;
+  box.querySelectorAll('[data-plroot]').forEach((c) => {
+    c.addEventListener('click', () => {
+      const v = c.dataset.plroot;
+      if (v === plPickRoot) return;
+      plPickRoot = v;
+      box.querySelectorAll('[data-plroot]').forEach((x) => x.classList.toggle('on', x.dataset.plroot === v));
+      loadPlPickTracks();
+    });
+  });
+}
+
 async function loadPlPickTracks() {
   const qv = ($('plPickSearch').value || '').trim();
-  const r = await api('/api/music/tracks' + (qv ? '?q=' + encodeURIComponent(qv) : ''));
+  const ps = [];
+  if (qv) ps.push('q=' + encodeURIComponent(qv));
+  if (plPickRoot) ps.push('lib=' + encodeURIComponent(plPickRoot));
+  const r = await api('/api/music/tracks' + (ps.length ? '?' + ps.join('&') : ''));
   plPickTracks = r.data || [];
   renderPlPickTracks();
 }
@@ -5613,8 +5742,9 @@ async function loadPlPickTracks() {
 function renderPlPickTracks() {
   const box = $('plPickList');
   if (!plPickTracks.length) {
+    const qv = ($('plPickSearch').value || '').trim();
     box.innerHTML = '<div class="mu-empty-s" style="padding:8px 2px">' +
-      (($('plPickSearch').value || '').trim() ? '没有匹配的歌曲' : '曲库还是空的，先去文件站扫一扫') + '</div>';
+      (qv ? '没有匹配的歌曲' : (plPickRoot ? '这个文件夹里还没有歌' : '曲库还是空的，先去文件站扫一扫')) + '</div>';
     return;
   }
   box.innerHTML = plPickTracks.map((t) => {

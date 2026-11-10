@@ -64,6 +64,10 @@
     <div class="fs-head-tools">
       <label class="btn primary sm" for="filePicker" data-upload>上传文件</label>
       <button class="btn sm" data-mkdir>新建文件夹</button>
+      <div class="drag-upload-tip" id="dragUploadTip" role="status">
+        <span>文件也可以直接拖到页面上传</span>
+        <button type="button" id="dragUploadTipClose">知道了</button>
+      </div>
     </div>
   </div>
 </header>
@@ -155,6 +159,8 @@
       <input type="text" id="plPickSearch" placeholder="搜索歌曲 / 歌手 / 专辑">
       <button class="btn sm" id="plPickAll">全选</button>
     </div>
+    <!-- 文件夹筛选：跟「全部曲目」顶上那排 chips 同一口径，第一个是「全部」 -->
+    <div class="mu-filter" id="plPickFilter" hidden></div>
     <div class="plpick-list" id="plPickList"></div>
     <div class="field" id="plPickNewRow" style="margin-top:12px">
       <label>或新建一个歌单</label>

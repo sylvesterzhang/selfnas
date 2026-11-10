@@ -1614,6 +1614,22 @@ a.btn { text-decoration: none; }
     align-items: center;
   }
 
+  /* 第一次打开文件站时，告诉桌面用户还有「拖进页面上传」这条入口。
+     放在上传按钮旁边，不遮列表；点「知道了」后由 JS 永久移除。 */
+  .drag-upload-tip {
+    display: inline-flex; align-items: center; gap: 7px;
+    margin-left: 2px; padding: 5px 7px 5px 10px;
+    border: 1px solid var(--accent-line); border-radius: 6px;
+    background: var(--accent-soft); color: var(--text-2);
+    font-size: 11px; line-height: 1.2; white-space: nowrap;
+  }
+  .drag-upload-tip button {
+    padding: 2px 5px; border: 0; border-radius: 4px;
+    background: transparent; color: var(--accent); cursor: pointer;
+    font: inherit; font-weight: 600;
+  }
+  .drag-upload-tip button:hover { background: rgba(90, 80, 200, .12); }
+
   /* 列表行：桌面档案管理器形态 —— 圆角行、悬停变色、信息分列 */
   .fs-list .row {
     padding: 9px 12px; border-bottom: none; border-radius: 8px;
@@ -1684,6 +1700,8 @@ a.btn { text-decoration: none; }
   display: none; position: fixed; inset: 0; z-index: 80;
   background: rgba(20, 20, 20, 0.35);
   align-items: center; justify-content: center;
+  /* 这是视觉提示层，不能挡住真正的 drop 事件；Linux Firefox 下尤其明显。 */
+  pointer-events: none;
 }
 .drop-hint.on { display: flex; }
 .drop-hint-box {
@@ -2037,6 +2055,8 @@ html[data-theme="dark"] .mu-q.hires { color: #f2d07a; background: rgba(212, 160,
 .plpick-list { max-height: 46vh; overflow-y: auto; overscroll-behavior: contain; }
 .plpick-toolbar { display: flex; gap: 8px; margin-bottom: 8px; }
 .plpick-toolbar input { flex: 1; min-width: 0; }
+/* 加歌弹框里的文件夹筛选：跟列表贴紧一点，别把列表挤太短 */
+#plPick .mu-filter { margin: 0 0 8px; padding-top: 0; }
 /* 勾选圈：没选时空圈，选中变实心圆勾 */
 .mu-check {
   width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid var(--border);
