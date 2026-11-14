@@ -188,8 +188,14 @@ func trimCache() {
 		mtime time.Time
 	}
 	var total int64
+	hlsRoot := filepath.Join(cacheDir, "hls")
 	_ = filepath.Walk(cacheDir, func(p string, fi os.FileInfo, err error) error {
 		if err != nil || fi.IsDir() || strings.HasSuffix(p, ".part") {
+			return nil
+		}
+		// HLS 直播转码的分片归 hls.go 的 janitor 管(闲置 4 分钟整目录删)，
+		// 不参与这里的 30GB 配额，否则看到一半整片分片被当"最旧文件"清掉
+		if strings.HasPrefix(p, hlsRoot+string(os.PathSeparator)) {
 			return nil
 		}
 		files = append(files, struct {
@@ -251,15 +257,28 @@ func handleFSPrep(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ext := strings.ToLower(filepath.Ext(name))
-	// 原生 mp4 平时直接给直链（ServeFile 带 Range，本来就能拖）；
-	// 但要旋转时必须过一遍缓存，makemp4 才能把矩阵写进去
+	// 非 remux 容器且不是 mp4 系（如 webm）→ 原生直链（ServeFile 带 Range，本来就能拖）
 	if !rot && !needRemux(name) && ext != ".mp4" && ext != ".m4v" && ext != ".mov" {
 		writeJSON(w, 0, "", map[string]any{"url": dl, "how": "原生", "ready": true})
 		return
 	}
+	// mp4/m4v/mov：默认原生直链。但 HEVC 的 mp4 **不能**给原生直链——库里常见 hev1 标签
+	// (2026-11-14 ffprobe 实锤四个春天=hev1)，Apple 系(iPhone 全部浏览器)只认 hvc1，
+	// 直链必黑屏。HEVC 要落下去走换标签 copy(-c copy -tag:v hvc1，无损不重编码)。
+	// enc=h264 是明确要求转 H.264(设备真没有 HEVC 解码器时)；源本就是 H.264 的直链即可。
 	if !rot && (ext == ".mp4" || ext == ".m4v" || ext == ".mov") {
-		writeJSON(w, 0, "", map[string]any{"url": dl, "how": "原生", "ready": true})
-		return
+		vc0, _ := probeCodecs(full)
+		if enc != "h264" {
+			if vc0 != "hevc" {
+				writeJSON(w, 0, "", map[string]any{"url": dl, "how": "原生", "ready": true})
+				return
+			}
+			// HEVC：继续往下走换标签 copy
+		} else if vc0 == "h264" {
+			// 要求转 H.264 但源本就是 H.264，直链即可，不必再转
+			writeJSON(w, 0, "", map[string]any{"url": dl, "how": "原生", "ready": true})
+			return
+		}
 	}
 
 	vcodec, acodec := probeCodecs(full)

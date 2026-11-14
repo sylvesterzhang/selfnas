@@ -1053,7 +1053,12 @@ body.mini-on .fs-fab { bottom: calc(72px + env(safe-area-inset-bottom)); }
 .mp-btn.primary:hover { background: #fff; color: #000; transform: scale(1.05); }
 .mp-btn.primary:active { transform: scale(.96); }
 
-.mp-right { display: flex; align-items: center; gap: 6px; justify-self: end; }
+/* 左右两翼：功能键分摊两边，中间三键严格居中（grid 1fr auto 1fr）。
+   左翼 = 歌名 + 循环/随机/加歌单，右翼 = 音量 + 播放列表 */
+.mp-side { display: flex; align-items: center; min-width: 0; }
+.mp-side-l { gap: 12px; }
+.mp-side-r { gap: 10px; justify-content: flex-end; }
+.mp-extra { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
 .mp-mode {
   width: 34px; height: 34px; border: 0; border-radius: 50%; background: transparent;
   color: rgba(255, 255, 255, .5); cursor: pointer;
@@ -1229,14 +1234,18 @@ body.mini-on .fs-fab { bottom: calc(72px + env(safe-area-inset-bottom)); }
   .mp-empty-t { font-size: 19px; }
   .mp-empty-h { margin-top: 18px; }
   /* 手机端三键严格居中。原来 1fr auto 1fr 的右列被音量横条撑宽，把中间列挤到左边；
-     横条收起后改成：三键绝对居中，右侧工具组用 flex 靠右（三键脱离流后 grid 会
-     把 .mp-right 自动挪到第一列，所以这里干脆不用 grid）。min-height 顶住原来三键撑出的行高。 */
-  .mp-ctl { position: relative; display: flex; justify-content: flex-end; align-items: center; gap: 0; min-height: 42px; }
+     横条收起后改成：三键绝对居中，两翼功能键分摊两边（左=循环/随机/加歌单，
+     右=音量/列表），不再出现「左边整块空白、右边挤一排」的失衡 */
+  .mp-ctl { position: relative; display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 42px; }
   .mp-now { display: none; }   /* 歌名顶栏已有，这一列整个不要 */
   .mp-btns { position: absolute; left: 50%; transform: translateX(-50%); gap: 10px; }
   .mp-btn { width: 30px; height: 30px; }
   .mp-btn.primary { width: 42px; height: 42px; }
-  .mp-right { gap: 0; }
+  .mp-side-l { gap: 0; }
+  .mp-side-r { gap: 4px; }
+  /* 一翼三键的宽度必须 ≤ (屏宽-内边距-中间三键)/2，否则 360/375 的窄屏会顶到中间键。
+     28px 键 + 10px 间距 = 104 ≤ 107（360 屏的极限），留出余量；390 屏上则更宽松 */
+  .mp-extra { gap: 10px; }
   .mp-mode { width: 28px; height: 28px; }
   /* 音量横条收起：点喇叭从按钮上方抽一条竖的，跟迷你条同一套手感 */
   .mp-vol { position: relative; }
@@ -1688,6 +1697,11 @@ a.btn { text-decoration: none; }
     max-height: 58vh; display: grid; grid-template-columns: 1fr 1fr;
     column-gap: 14px; align-content: start;
   }
+  /* 单曲选歌单（target 模式）只是列几个歌单名，不需要 780 的双列工作台；
+     窄一点居中更聚焦，列表单列。多选挑歌（tracks 模式）仍走上面的 780 双列。 */
+  #plPick.tmode .modal { width: 460px; max-width: 460px; }
+  #plPick.tmode .plpick-list { display: block; max-height: 50vh; }
+  #plPick.tmode .modal .sub { color: var(--text-2); margin-top: 2px; }
   /* 空态 / 提示行跨满两栏，别只缩在左半边 */
   #plPick .plpick-list > .mu-empty-s { grid-column: 1 / -1; }
   #plPick .plpick-toolbar { gap: 10px; }
@@ -2053,10 +2067,15 @@ html[data-theme="dark"] .mu-q.hires { color: #f2d07a; background: rgba(212, 160,
 #plPickList .mu-row:active { background: var(--surface-2); }
 /* 多选挑歌：列表自己滚，底部按钮不被顶走 */
 .plpick-list { max-height: 46vh; overflow-y: auto; overscroll-behavior: contain; }
-.plpick-toolbar { display: flex; gap: 8px; margin-bottom: 8px; }
+/* ⚠️ 必须用 :not([hidden])：单曲选歌单模式是靠 hidden 属性收掉这条工具栏的，
+   而作者样式里的 display:flex 会盖掉 UA 的 [hidden]{display:none} ——
+   写成无条件 display:flex 的话，「加入歌单」里会莫名冒出搜索框和「全选」。 */
+.plpick-toolbar:not([hidden]) { display: flex; gap: 8px; margin-bottom: 8px; }
 .plpick-toolbar input { flex: 1; min-width: 0; }
 /* 加歌弹框里的文件夹筛选：跟列表贴紧一点，别把列表挤太短 */
 #plPick .mu-filter { margin: 0 0 8px; padding-top: 0; }
+/* 同一个坑的兜底：.mu-filter 也是 display:flex */
+#plPick .mu-filter[hidden] { display: none; }
 /* 勾选圈：没选时空圈，选中变实心圆勾 */
 .mu-check {
   width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid var(--border);
@@ -2221,7 +2240,49 @@ body.mini-on { padding-bottom: 58px; }
    它是在视频播放页里弹的，普通的 .overlay 是 z-index 50，会被播放器（60）整个盖住 ——
    这里必须压过 60 才看得见。 */
 #castSheet { z-index: 70; }
+/* 「加入歌单」弹层：播放详情页里点「＋」也会弹它，跟 castSheet 同一个坑 ——
+   不抬过播放器（z-index 60）就会被盖住，用户得先把播放器最小化才看得见弹框。 */
+#plPick { z-index: 70; }
+
+/* ---- 播放器里的深色皮肤（#plPick.dark）----
+   播放器是单独的一套固定深色视觉（黑胶 + 封面氛围光），外面主题的浅色弹框
+   盖上去就像「贴错了地方」。这里所有色值都从播放器现有部件里搬，不发明新颜色：
+   面板 = 队列抽屉 .mp-qpane（rgba(16,18,23,.96) + blur 18px + 同款描边/投影），
+   主按钮 = 播放键 .mp-btn.primary（白底深字），图标底 = 音效弹层选中态，
+   蓝 = 进度条/队列高亮的 #4a86e8 系，红 = 静音标记的 #ff8a80。 */
+#plPick.dark { background: rgba(4, 6, 10, .62); }
+#plPick.dark .modal {
+  background: rgba(16, 18, 23, .96);
+  border-color: rgba(255, 255, 255, .07);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .5);
+  -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+  color: rgba(255, 255, 255, .82); color-scheme: dark;
+}
+#plPick.dark .modal h3 { color: #e8eaee; }
+#plPick.dark .modal .sub { color: rgba(255, 255, 255, .45); }
+#plPick.dark .field input[type=text] {
+  background: rgba(255, 255, 255, .07); border-color: rgba(255, 255, 255, .14); color: #fff;
+}
+#plPick.dark .field input[type=text]:focus { outline-color: #4a86e8; }
+#plPick.dark .btn { background: rgba(255, 255, 255, .09); border-color: rgba(255, 255, 255, .14); color: rgba(255, 255, 255, .85); }
+#plPick.dark .btn:hover { background: rgba(255, 255, 255, .14); }
+#plPick.dark .btn.primary { background: #f2f4f7; border-color: #f2f4f7; color: #14161a; }
+#plPick.dark .btn.primary:hover { background: #fff; color: #000; }
+#plPick.dark #plPickList .mu-row { color: rgba(255, 255, 255, .82); }
+#plPick.dark #plPickList .mu-row:active { background: rgba(255, 255, 255, .06); }
+#plPick.dark .mu-pl-ico { background: rgba(74, 134, 232, .16); color: #8db8ff; }
+#plPick.dark .mu-main b { color: #e8eaee; }
+#plPick.dark .mu-main i { color: rgba(255, 255, 255, .38); }
+#plPick.dark .mu-tag { color: rgba(255, 255, 255, .5); border-color: rgba(255, 255, 255, .22); }
+#plPick.dark .err { color: #ff8a80; }
 .cast-body { display: flex; flex-direction: column; gap: 8px; min-height: 90px; }
+/* 手动添加电视：SSDP 组播被路由器掐掉时，填 IP 单播直连绕开发现 */
+.cast-manual { display: flex; gap: 8px; margin-top: 12px; }
+.cast-manual input {
+  flex: 1; min-width: 0; padding: 8px 10px; font-size: 13px; font-family: inherit;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); color: inherit;
+}
+.cast-manual input:focus { outline: 2px solid var(--accent-line); outline-offset: -1px; }
 .cast-status {
   padding: 14px 10px; font-size: 13px; color: var(--text-2);
   text-align: center; line-height: 1.7; align-self: stretch;

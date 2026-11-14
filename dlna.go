@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/hex"
 	"encoding/xml"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -47,6 +48,18 @@ var (
 	dlnaScan  time.Time
 )
 
+// 手动指定的渲染器地址（"ip" 或 "ip:port"），绕开 SSDP 组播直连。
+var (
+	dlnaManualMu   sync.Mutex
+	dlnaManual     = []string{}
+	dlnaManualSeen = map[string]*dlnaManualRec{} // location → 最近一次直连结果（快速路径，避免反复打扰电视）
+)
+
+type dlnaManualRec struct {
+	dev  *dlnaDevice
+	last time.Time
+}
+
 type dlnaEntry struct {
 	dev      *dlnaDevice
 	lastSeen time.Time
@@ -64,7 +77,7 @@ func dlnaSeen(usn, location string) {
 	dlnaMu.Unlock()
 	// 描述文档要发 HTTP，别堵住监听循环
 	go func() {
-		name, ctrl, err := dlnaDescribe(location)
+		_, name, ctrl, err := dlnaDescribe(location)
 		if err != nil || ctrl == "" {
 			return // 不是渲染器（没 AVTransport）或描述残缺，不要
 		}
@@ -141,6 +154,7 @@ func dlnaDevices(force bool) []*dlnaDevice {
 	fresh := time.Since(dlnaScan) < dlnaCacheTTL && len(dlnaCache) > 0
 	dlnaMu.Unlock()
 	if !force && fresh {
+		dlnaEnsureManual()
 		return dlnaList()
 	}
 	found := dlnaDiscover()
@@ -161,6 +175,7 @@ func dlnaDevices(force bool) []*dlnaDevice {
 		}
 	}
 	dlnaMu.Unlock()
+	dlnaEnsureManual()
 	return dlnaList()
 }
 
@@ -291,7 +306,7 @@ func dlnaDiscover() []*dlnaDevice {
 
 	out := make([]*dlnaDevice, 0, len(locs))
 	for usn, l := range locs {
-		name, ctrl, err := dlnaDescribe(l.loc)
+		_, name, ctrl, err := dlnaDescribe(l.loc)
 		if err != nil || ctrl == "" {
 			// rootdevice 应答的设备不一定带 AVTransport（比如路由器/打印机），静默跳过
 			if strings.Contains(usn, "AVTransport") || strings.Contains(usn, "MediaRenderer") {
@@ -322,6 +337,7 @@ func dlnaUDN(usn, location string) string {
 
 type dlnaDescXML struct {
 	Device struct {
+		UDN          string `xml:"UDN"`
 		FriendlyName string `xml:"friendlyName"`
 		Services     []struct {
 			ServiceType string `xml:"serviceType"`
@@ -343,20 +359,23 @@ type dlnaDescChild struct {
 }
 
 // dlnaDescribe 拉设备描述文档：拿到电视名 + AVTransport 的控制地址（转成绝对地址）。
-func dlnaDescribe(location string) (name, controlURL string, err error) {
-	cli := &http.Client{Timeout: 4 * time.Second}
+func dlnaDescribe(location string) (udn, name, controlURL string, err error) {
+	cli := &http.Client{Timeout: 4 * time.Second, Transport: dlnaNoProxy()}
 	resp, err := cli.Get(location)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	var desc dlnaDescXML
 	if err := xml.Unmarshal(body, &desc); err != nil {
-		return "", "", err
+		return "", "", "", err
+	}
+	if desc.Device.UDN != "" {
+		udn = desc.Device.UDN
 	}
 	if desc.Device.FriendlyName != "" {
 		name = desc.Device.FriendlyName
@@ -372,7 +391,7 @@ func dlnaDescribe(location string) (name, controlURL string, err error) {
 	}
 	for _, s := range desc.Device.Services {
 		if u, ok := grab(s); ok {
-			return name, dlnaAbsURL(location, u), nil
+			return udn, name, dlnaAbsURL(location, u), nil
 		}
 	}
 	for _, ch := range desc.Children.Devices {
@@ -381,14 +400,14 @@ func dlnaDescribe(location string) (name, controlURL string, err error) {
 		}
 		for _, s := range ch.Services {
 			if u, ok := grab(s); ok {
-				return name, dlnaAbsURL(location, u), nil
+				return udn, name, dlnaAbsURL(location, u), nil
 			}
 		}
 	}
 	if name == "" {
 		name = "未知设备"
 	}
-	return name, "", nil
+	return udn, name, "", nil
 }
 
 // dlnaAbsURL 描述文档里的 controlURL 常是相对路径，按 LOCATION 拼成绝对地址。
@@ -429,7 +448,7 @@ func dlnaSOAP(dev *dlnaDevice, action, argsXML string) error {
 	}
 	req.Header.Set("Content-Type", `text/xml; charset="utf-8"`)
 	req.Header.Set("SOAPACTION", `"`+dlnaST+`#`+action+`"`)
-	cli := &http.Client{Timeout: 6 * time.Second}
+	cli := &http.Client{Timeout: 6 * time.Second, Transport: dlnaNoProxy()}
 	resp, err := cli.Do(req)
 	if err != nil {
 		return err
@@ -624,4 +643,137 @@ func handleDlnaStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 0, "已停止", nil)
+}
+
+// ---------- 手动设备（单播直连，绕开 SSDP 组播） ----------
+
+// dlnaNoProxy 返回不带代理的 Transport：电视/盒子都在局域网，
+// 系统若设了 HTTP 代理会让 LAN 请求被拐去代理而连不上，必须显式关掉。
+func dlnaNoProxy() *http.Transport {
+	return &http.Transport{Proxy: func(*http.Request) (*url.URL, error) { return nil, nil }}
+}
+
+// dlnaLoadManual 把 config.json 里的手动设备地址装进内存切片（启动时调一次）。
+func dlnaLoadManual() {
+	cfgMu.Lock()
+	list := append([]string{}, cfg.DlnaManual...)
+	cfgMu.Unlock()
+	dlnaManualMu.Lock()
+	dlnaManual = list
+	dlnaManualMu.Unlock()
+	log.Printf("[DLNA] 已载入 %d 个手动设备地址", len(list))
+}
+
+// dlnaAddManual 用单播直连指定地址的 description.xml，绕过 SSDP 组播发现。
+// spec 形如 "192.168.1.50" 或 "192.168.1.50:49152"。
+func dlnaAddManual(spec string) (*dlnaDevice, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return nil, fmt.Errorf("地址为空")
+	}
+	host := spec
+	port := 49152
+	if i := strings.LastIndex(spec, ":"); i > 0 {
+		if p, e := strconv.Atoi(strings.TrimSpace(spec[i+1:])); e == nil && p > 0 && p < 65536 {
+			port = p
+			host = strings.TrimSpace(spec[:i])
+		}
+	}
+	location := fmt.Sprintf("http://%s:%d/description.xml", host, port)
+	// 1 小时内成功直连过就直接复用，不去反复打扰电视
+	dlnaMu.Lock()
+	if rec, ok := dlnaManualSeen[location]; ok && time.Since(rec.last) < time.Hour {
+		dlnaMu.Unlock()
+		return rec.dev, nil
+	}
+	dlnaMu.Unlock()
+	udn, name, ctrl, err := dlnaDescribe(location)
+	if err != nil {
+		return nil, fmt.Errorf("连不上 %s：%v", location, err)
+	}
+	if ctrl == "" {
+		return nil, fmt.Errorf("%s 上没有 AVTransport 服务（可能不是投屏设备）", location)
+	}
+	key := dlnaUDN(udn, location)
+	dev := &dlnaDevice{UDN: key, Name: name, controlURL: ctrl}
+	ent := &dlnaEntry{dev: dev, lastSeen: time.Now()}
+	dlnaMu.Lock()
+	dlnaCache[key] = ent // 用 uuid 当稳定 key，避免和 SSDP 发现的同一台电视重复
+	dlnaManualSeen[location] = &dlnaManualRec{dev: dev, last: time.Now()}
+	dlnaMu.Unlock()
+	log.Printf("[DLNA] 手动添加渲染器: %s (%s)", name, location)
+	return dev, nil
+}
+
+// dlnaEnsureManual 保证每个手动地址都在设备缓存里（不在就直连拉一次）。
+// 放进 dlnaDevices 的返回路径，这样无论 SSDP 组播通不通，手动电视都稳定出现。
+func dlnaEnsureManual() {
+	dlnaManualMu.Lock()
+	list := append([]string{}, dlnaManual...)
+	dlnaManualMu.Unlock()
+	for _, spec := range list {
+		if _, err := dlnaAddManual(spec); err != nil {
+			continue // 电视没开/网络抖：静默跳过，下次再试
+		}
+	}
+}
+
+// POST /api/dlna/manual {ip, port?} → 手动直连一台电视/盒子并加入设备列表（持久化到 config）。
+func handleDlnaManual(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, 405, "方法不对", nil)
+		return
+	}
+	var b struct {
+		IP   string `json:"ip"`
+		Port int    `json:"port"`
+	}
+	if !decodeBody(r, &b) {
+		writeJSON(w, 400, "请求格式错误", nil)
+		return
+	}
+	spec := strings.TrimSpace(b.IP)
+	if spec == "" {
+		writeJSON(w, 400, "先填电视的 IP", nil)
+		return
+	}
+	if b.Port > 0 {
+		spec = spec + ":" + strconv.Itoa(b.Port)
+	}
+	dev, err := dlnaAddManual(spec)
+	if err != nil {
+		writeJSON(w, 502, "添加失败: "+err.Error(), nil)
+		return
+	}
+	// 去重后写进内存切片，之后每次发现都会带上它
+	dlnaManualMu.Lock()
+	dup := false
+	for _, s := range dlnaManual {
+		if s == spec {
+			dup = true
+			break
+		}
+	}
+	if !dup {
+		dlnaManual = append(dlnaManual, spec)
+	}
+	dlnaManualMu.Unlock()
+	// 持久化到 config.json，重启后仍生效
+	cfgMu.Lock()
+	cfgDup := false
+	for _, s := range cfg.DlnaManual {
+		if s == spec {
+			cfgDup = true
+			break
+		}
+	}
+	if !cfgDup {
+		cfg.DlnaManual = append(cfg.DlnaManual, spec)
+	}
+	serr := saveConfigLocked()
+	cfgMu.Unlock()
+	if serr != nil {
+		log.Printf("[DLNA] 手动设备持久化失败: %v", serr)
+	}
+	writeJSON(w, 0, "已添加「"+dev.Name+"」", map[string]string{"udn": dev.UDN, "name": dev.Name})
 }

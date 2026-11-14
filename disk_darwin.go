@@ -49,3 +49,6 @@ func volumeSpaceOS(path string) (uint64, uint64) {
 	bsize := uint64(st.Bsize)
 	return uint64(st.Blocks) * bsize, uint64(st.Bavail) * bsize
 }
+
+// autoMountHook macOS 插盘即自动挂载，无需处理。
+func autoMountHook() []string { return nil }

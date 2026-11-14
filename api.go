@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -282,6 +283,10 @@ func handleRootsRescan(w http.ResponseWriter, r *http.Request) {
 	cfgMu.Lock()
 	defer cfgMu.Unlock()
 
+	// Linux 先把「有文件系统但没挂载」的盘挂回来（拔了重插的移动硬盘就靠这一步复活），
+	// Windows/macOS 插盘即自动挂载，钩子是空操作。
+	mounted := autoMountHook()
+
 	exist := make(map[string]bool, len(cfg.Roots))
 	for _, rt := range cfg.Roots {
 		exist[strings.ToLower(normPath(rt.Path))] = true
@@ -298,18 +303,32 @@ func handleRootsRescan(w http.ResponseWriter, r *http.Request) {
 		// 与首次启动保持同一口径：C 盘默认不启用，其余启用
 		cfg.Roots = append(cfg.Roots, Root{Name: name, Path: d.Path, Enabled: d.Letter != "C"})
 		exist[strings.ToLower(normPath(d.Path))] = true
-		added = append(added, d.Letter+":")
+		// Windows 用盘符（C:），Linux/macOS 没盘符，报挂载点路径
+		if d.Letter != "" {
+			added = append(added, d.Letter+":")
+		} else {
+			added = append(added, d.Path)
+		}
 	}
-	if len(added) == 0 {
-		writeJSON(w, 0, "没有发现新的磁盘", map[string]any{"added": added})
+	if len(added) == 0 && len(mounted) == 0 {
+		writeJSON(w, 0, "没有发现新的磁盘", map[string]any{"added": added, "mounted": mounted})
 		return
 	}
-	if err := saveConfigLocked(); err != nil {
-		writeJSON(w, 500, "保存失败: "+err.Error(), nil)
-		return
+	if len(added) > 0 {
+		if err := saveConfigLocked(); err != nil {
+			writeJSON(w, 500, "保存失败: "+err.Error(), nil)
+			return
+		}
+		smbReload()
 	}
-	smbReload()
-	writeJSON(w, 0, "ok", map[string]any{"added": added})
+	msg := "ok"
+	switch {
+	case len(mounted) > 0 && len(added) > 0:
+		msg = fmt.Sprintf("已挂载 %d 块磁盘，新增根目录 %d 个", len(mounted), len(added))
+	case len(mounted) > 0:
+		msg = fmt.Sprintf("已挂载 %d 块磁盘", len(mounted))
+	}
+	writeJSON(w, 0, msg, map[string]any{"added": added, "mounted": mounted})
 }
 
 func handleRootUpdate(w http.ResponseWriter, r *http.Request) {

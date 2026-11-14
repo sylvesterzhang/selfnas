@@ -415,8 +415,14 @@ $('btnRescan').addEventListener('click', async () => {
       return;
     }
     const added = (res.data && res.data.added) || [];
-    toast(added.length ? '已新增根目录：' + added.join('、') : '没有发现新的磁盘');
-    if (added.length) loadState();
+    const mounted = (res.data && res.data.mounted) || [];
+    let msg;
+    if (added.length && mounted.length) msg = '已挂载 ' + mounted.join('、') + '，新增根目录：' + added.join('、');
+    else if (mounted.length) msg = '已挂载：' + mounted.join('、');
+    else if (added.length) msg = '已新增根目录：' + added.join('、');
+    else msg = '没有发现新的磁盘';
+    toast(msg);
+    if (added.length || mounted.length) loadState();
   } finally {
     btn.disabled = false;
     btn.textContent = '重新扫描磁盘';

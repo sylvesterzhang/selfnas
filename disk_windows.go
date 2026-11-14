@@ -102,3 +102,6 @@ func volumeSpaceOS(path string) (uint64, uint64) {
 	}
 	return 0, 0
 }
+
+// autoMountHook Windows 插盘即自动挂载，无需处理。
+func autoMountHook() []string { return nil }

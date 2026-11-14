@@ -13,6 +13,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -760,11 +761,11 @@ func handleMusicPlaylist(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 500, "读取失败", nil)
 			return
 		}
-		defer rows.Close()
 		type pl struct {
-			ID    int64  `json:"id"`
-			Name  string `json:"name"`
-			Count int    `json:"count"`
+			ID       int64  `json:"id"`
+			Name     string `json:"name"`
+			Count    int    `json:"count"`
+			Contains bool   `json:"contains,omitempty"` // 这首歌已经在此歌单里（仅传入 hasroot/haspath 时返回）
 		}
 		out := []pl{}
 		for rows.Next() {
@@ -772,6 +773,25 @@ func handleMusicPlaylist(w http.ResponseWriter, r *http.Request) {
 			var ts int64
 			if rows.Scan(&p.ID, &p.Name, &ts, &p.Count) == nil {
 				out = append(out, p)
+			}
+		}
+		rows.Close()
+		// 「加入歌单」弹框传 hasroot/haspath 时，顺带告诉前端这首歌已在哪些歌单里，
+		// 前端把那些歌单标成「已在」，点了不重复加。放在 rows.Close() 之后（单连接池防自锁）。
+		if q := r.URL.Query(); q.Get("hasroot") != "" && q.Get("haspath") != "" {
+			hasRoot, hasPath := canonicalRoot(q.Get("hasroot")), q.Get("haspath")
+			ids := map[int64]bool{}
+			if r2, e := db.Query(`SELECT DISTINCT playlist_id FROM playlist_item WHERE root = ? AND path = ?`, hasRoot, hasPath); e == nil {
+				for r2.Next() {
+					var id int64
+					if r2.Scan(&id) == nil {
+						ids[id] = true
+					}
+				}
+				r2.Close()
+			}
+			for i := range out {
+				out[i].Contains = ids[out[i].ID]
 			}
 		}
 		writeJSON(w, 0, "", out)
@@ -908,20 +928,42 @@ func handleMusicPlaylistItems(w http.ResponseWriter, r *http.Request) {
 		var max int
 		_ = db.QueryRow(`SELECT COALESCE(MAX(pos), -1) FROM playlist_item WHERE playlist_id = ?`, b.ID).Scan(&max)
 		var err error
-		for i, t := range b.Tracks {
+		added, dup := 0, 0
+		pos := max + 1
+		for _, t := range b.Tracks {
 			if t.Root == "" || t.Path == "" {
 				continue
 			}
 			t.Root = canonicalRoot(t.Root) // 防「F://」这类脏 root 在库里另立一条（与 recent 同源的老坑）
+			// 查重：同一首歌已经在歌单里就跳过，不重复入库
+			var n int
+			_ = db.QueryRow(`SELECT COUNT(*) FROM playlist_item WHERE playlist_id = ? AND root = ? AND path = ?`,
+				b.ID, t.Root, t.Path).Scan(&n)
+			if n > 0 {
+				dup++
+				continue
+			}
 			if _, e := db.Exec(`INSERT INTO playlist_item (playlist_id, root, path, pos, ts) VALUES (?,?,?,?,?)`,
-				b.ID, t.Root, t.Path, max+1+i, time.Now().Unix()); e != nil {
+				b.ID, t.Root, t.Path, pos, time.Now().Unix()); e != nil {
 				err = e
+			} else {
+				added++
+				pos++
 			}
 		}
 		if err == nil {
 			flush()
 		}
-		writeJSONErr(w, err, "已加入歌单")
+		switch {
+		case err != nil:
+			writeJSONErr(w, err, "已加入歌单")
+		case added == 0 && dup > 0:
+			writeJSON(w, 409, fmt.Sprintf("%d 首歌都已经在歌单里了，不用重复加", dup), nil)
+		case dup > 0:
+			writeJSON(w, 0, fmt.Sprintf("已加入 %d 首，%d 首已在歌单里跳过", added, dup), nil)
+		default:
+			writeJSON(w, 0, "已加入歌单", nil)
+		}
 
 	case http.MethodPut:
 		var b struct {

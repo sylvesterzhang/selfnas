@@ -125,11 +125,12 @@ SelfNAS 就干这几件事：打开网页就能用，扫码就登录，手机上
 - 曲库不是「全盘扫」：只在音乐页右上角（曲库管理）把放音乐的文件夹标进来，就扫这些目录 —— 下载目录里散落的三五个音频不会被凑成一张专辑
 - 进音乐页先做一次轻量盘点（只比文件名 + 大小 + 修改时间，不读标签），跟库里有差异就在后台增量扫；不驻留文件监听，新加的歌过几秒自己出现
 - 五个标签页：歌手 / 专辑 / 全部曲目 / 收藏 / 歌单；全部曲目顶上还有一排「曲库文件夹」筛选条
-- **播放页**：黑胶 + 封面 + 歌词，底部是自绘控件 —— 进度可拖、音量、上一首 / 下一首、循环三态（列表 / 单曲 / 关）、随机、队列抽屉
+- **播放页**：黑胶 + 封面 + 歌词，底部是自绘控件 —— 进度可拖、音量、上一首 / 下一首、循环三态（列表 / 单曲 / 关）、随机、队列抽屉；功能键左右分列、中间三键始终居中，手机窄屏也不挤
 - **点歌先不打断浏览**：点一行只是开始在底部迷你条里播，你可以接着翻列表、换标签页；点条子中间才展开全屏
 - **锁屏 / 切后台不断**：前端就是一个普普通通的 `<audio>`，没有 Web Audio（原因见「踩过的坑」），Media Session 把歌名、封面、上一首 / 下一首交给系统锁屏界面
 - **刷新或关掉页面再回来，队列和位置还在**（存本机 localStorage，不占服务端）
 - **歌单**：建、改名、删；加歌在弹框里点一行勾一行，勾几首加几首（按钮上带数字），已在歌单里的标「已在」并灰掉；歌单详情里也能勾一批一起移除
+- **正在听的这首直接加**：播放详情页底部「＋」弹选歌单（沿用播放器的深色样式，不用先最小化）；重复的后端也会拦住 —— 全部重复回「都已经在歌单里了」，批量时部分重复回「已加入 X 首，Y 首已在歌单里跳过」
 - **Hi-Res / 无损标记**：读 FLAC / WAVE 文件头判位深与采样率，判不出来才按码率兜底
 - 封面优先内嵌图，没有就用同目录 `cover.jpg` / `folder.jpg`；歌词优先同名 `.lrc`（大小写不敏感），没有才用内嵌标签；网易云那种 `[00:00.00]暂无歌词` 的占位文件会被认出来当没有
 
@@ -141,7 +142,7 @@ SelfNAS 就干这几件事：打开网页就能用，扫码就登录，手机上
 - **能拖进度**：输出固定 320k CBR（LAME 用填充帧把码率钉死在 40000 B/s），于是「字节区间」可以直接换算成「时间区间」，`Range` 请求按 `-ss / -t` 切，误差不超过一帧
 - **音量一致只提不压**：目标 -10.5 LUFS，比它响的歌一个 dB 都不动，只把偏小的老录音往上提（最多 +12 dB，且受真峰值 -0.1 dBTP 约束）
 - 开「音量一致」时第一首新歌要先量一遍响度（Hi-Res 大文件约 2 秒），量完记进库，之后 30 ms 级
-- 缓存按「开关 + 预设」分目录，参数一改整目录作废重转（算法版本号进缓存 key）；总占用超过 8 GB 就按最旧的删。没装 ffmpeg 就自动退回原声，播放不中断
+- 缓存按「开关 + 预设」分目录，参数一改整目录作废重转（算法版本号进缓存 key）；总占用超过 8 GB 就按最旧的删。找不到 ffmpeg 的极少数平台会退回原声，播放不中断
 
 **手机听歌（Subsonic 兼容层）**
 - 同一个端口的 `/rest/`，不另开端口：Substreamer / play:Sub / DSub 这类原生 App 直接连，锁屏、耳机线控、离线缓存全交给 App
@@ -154,13 +155,14 @@ SelfNAS 就干这几件事：打开网页就能用，扫码就登录，手机上
 
 **视频播放**
 - MKV / AVI / TS 这类 iOS Safari 播不了的容器，**不做转码，只换封装**：`-c:v copy` 把码流原样搬进 fragmented MP4，4K 也是几毫秒起播
-- 播不了才降级转码（可选，需要 ffmpeg）
-- 前台先问「能不能播 / 要不要换封装 / 只给下载」，不让人对着黑屏等
-- **缺 ffmpeg 的时候在疼的地方给药**：碰上要转码的格式，播放器里直接给一个「立即安装并播放」—— 下载、解压、校验、热生效，装完接着播，全程不用知道 ffmpeg 是什么
-  - 默认拉的是 Windows 的 essentials 构建（约 90 MB 的包，只用里面的 ffmpeg / ffprobe）；国内直连慢就在配置里把 `ffmpegUrl` 换成镜像
-  - Linux / macOS 用自己的包管理器装更省事，装完在管理台刷新一下就认到了
+- **HEVC 的 MP4 先修标签，别急着转码**：Apple 只认 `hvc1`，而很多 4K 片是 `hev1` —— 编码手机硬解得动，只是标签不对，直接喂给 Safari 就是黑屏。用 `-c copy -tag:v hvc1` 无损换标签，一次生成缓存，之后一直是原画质直连、进度随便拖
+- 只有浏览器**真的解不开** HEVC 才降级转 H.264；播放器会明说当前是「原画质播放 · 可随意拖动」还是「边转边播 · 已转好的部分可以拖动 · 后台转完下次打开就能随意拖」
+- **iPhone / iPad 走 HLS**：WebKit 不接受没有 `Content-Length` 的渐进式 fMP4，播几秒就断 —— 改成 m3u8 + ts 分片（服务端实时出，4 分钟没人请求就自动清）
+- 前台先问「能不能播 / 要不要换封装 / 只给下载」，不让人对着黑屏等；播到一半黑屏或报错会自动切到转码那条路
+- 上面这些全靠**内置 ffmpeg**，开箱即用；想改用自己的那份，在 `config.json` 里把 `ffmpeg` 指到路径（优先级最高）
 - **接着上次看**：播放进度按账号记在服务端，重开视频自动跳到上次位置（看完或拖回开头则清除）
 - **投屏到电视（DLNA）**：播放页里点「投屏」，局域网里的电视 / 盒子（SSDP 发现）列出来，选一台就推过去。视频本体是电视自己从这台机器拉的签名直链，不经过服务端中转，也不占手机电量
+  - **路由器拦组播时**（有线 ↔ 无线之间很常见，SSDP 一个设备都发现不了）在投屏弹层里直接填电视 IP 手动添加，之后跟自动发现的设备一样用
 - **外部播放器**：视频 / 音频预览底部点「播放器打开」，生成一条**短期签名直链**（6 小时有效，签名绑定路径 + 大小 + 过期时间，密钥是配置里的 `secret`）—— iPhone 上自动唤起 VLC，没装就复制链接，粘到 Infuse / VLC / nPlayer 的「打开 URL / 网络串流」即可
 
 **文件**
@@ -211,7 +213,8 @@ SelfNAS 就干这几件事：打开网页就能用，扫码就登录，手机上
 - 网页管理台：端口、根目录（增删改、可标只读）、改密码、看日志、看传输记录、看缓存占用
 - **开机自启**：管理台里一个开关。Windows 直接写计划任务（开机后在后台把服务拉起来，不弹黑窗口、不用先登录桌面）；Linux / macOS 生成 systemd unit / LaunchDaemon plist 并给出一条复制就能跑的命令，装不装由你决定
 - **检查更新**：点一下才去查 GitHub Releases（不偷偷联网），结果存下来，有新版本时「关于」按钮旁挂个红点
-- **一键重新扫描磁盘**：新硬盘、新分区、双系统里另一个系统多出来的盘，点一下自动加进根目录；已有的条目（改名 / 只读 / 禁用）不会被覆盖
+- **一键重新扫描磁盘**：新硬盘、新分区、双系统里另一个系统多出来的盘，点一下自动加进根目录；已有的条目（改名 / 只读 / 禁用）不会被覆盖。**Linux 上还会顺手把「有文件系统但没挂上」的盘挂回去**（先按 fstab，找不到就挂到 `/mnt/<卷标>`）—— 移动硬盘重新插上、或 `nofail` 开机没挂上，不用再手动 `mount`
+  - 不用等点按钮：服务启动时会自己检查并挂载一次，10 秒后再补一次（开机时 systemd 常比 USB 盘枚举还早）
 - 配置改动热生效，不用重启 —— 包括根目录的增删改：WebDAV 每次请求都现读配置；SMB 是**就地改共享表 + 切换共享背后的 VFS**（不重启监听、不断连接）：关掉的盘会立刻从共享列表里消失，已经打开它的客户端当场变成 `Access denied`，**把盘再打开之后原来那个位置直接就能用**，不需要在手机上删连接重加
 
 ---
@@ -292,7 +295,7 @@ python scripts/release.py    # 打成 zip / tar.gz + SHA256SUMS，产物在 dist
 
 ```
 ================================================
-  selfnas 0.20.0
+  selfnas 0.21.2
   管理台:  http://127.0.0.1:8080/admin
   局域网:  http://192.168.1.100/admin
   配置:    ./config.json
@@ -341,6 +344,7 @@ python scripts/release.py    # 打成 zip / tar.gz + SHA256SUMS，产物在 dist
 | | Windows | Linux | macOS |
 |---|---|---|---|
 | 首次启动枚举磁盘 | ✅ 自动把 C/D/E/F 列成根目录（C 盘默认关闭） | ✅ 家目录 + `/media`、`/mnt` 下已挂载的外部存储（跳过系统挂载点和虚拟文件系统） | ✅ 家目录 + `/Volumes` 下的真实卷 |
+| 外接盘 / 重启后没挂上 | 系统自动挂，不用管 | ✅ 启动与「重新扫描磁盘」都会把有文件系统但未挂载的盘挂回去 | 系统自动挂，不用管 |
 | 盘符显示 | 显示 `D:` `E:` 帮助认盘 | 无盘符，显示目录名 | 无盘符，显示卷名 |
 | 路径长这样 | `D:\视频` | `/mnt/media` | `/Volumes/移动硬盘` |
 | 开机自启 | 直接写计划任务，一个开关搞定 | 生成 systemd unit +「复制就能跑」的安装命令，自己敲 | 生成 LaunchDaemon plist + 安装命令，自己敲 |
@@ -383,8 +387,8 @@ python scripts/release.py    # 打成 zip / tar.gz + SHA256SUMS，产物在 dist
   "theme": "light",          // 文件站皮肤：light / blue / pink / ebook / green / dark / nas
   "uploadConcurrency": 2,    // 并行上传的分片数，千兆有线可以开到 4
   "sessionDays": 3650,
-  "ffmpeg": "",              // 留空则自动查找（转码和音效都靠它）
-  "ffmpegUrl": "",           // 一键安装 ffmpeg 时用的下载地址，留空走默认
+  "ffmpeg": "",              // 留空用内置那份；填绝对路径则优先用外部的
+  "ffmpegUrl": "",           // 兜底用：一键下载安装 ffmpeg 的地址，留空走默认
   "smb": {                   // iPhone / iPad 用，默认关；建议在管理台里开关
     "enabled": false,
     "port": 445,             // iOS 只认 445，改了就连不上
@@ -400,11 +404,11 @@ python scripts/release.py    # 打成 zip / tar.gz + SHA256SUMS，产物在 dist
 
 ### 关于 ffmpeg
 
-**不装也能用。** 只是 MKV / AVI / TS 之外的格式能直连播的会直连播，需要转码的会降级成下载；**音效和「音量一致」也会自动关掉**（回原声），不会因为缺这个依赖把播放搞坏。
+**开箱就能用，不用装。** 五个平台的发布包各内置一份 ffmpeg 6.1.1，第一次要做音频处理 / 转封装 / 转码时自动释放到 `cache/ffbundle-<平台>/`（约 0.2 秒，之后一直复用）。换封装、转码、HLS、EQ、响度均衡这几条路都是默认可走的，不用装 Homebrew、不用配 PATH —— 来源与许可见文末「内置的 ffmpeg」。
 
-装了 ffmpeg 才有「换封装」「转码」「EQ」「响度均衡」这几条路。`ffmpeg` 字段可以写绝对路径，也可以留空让它自己找（会优先找能跑 NVENC 硬编的那份）。
+如果自己装了更新版本、想改用它，在 `config.json` 里把 `ffmpeg` 指到绝对路径，这一项优先级最高；留空则自动查找（会优先找能跑 NVENC 硬编的那份）。早期版本那套「碰上要转码就一键下载安装 ffmpeg」的入口还留着（`ffmpegUrl` 可换镜像地址），但内置之后基本用不上了。
 
-懒得自己装的话，碰上要转码的视频时播放器里会问一句「立即安装并播放」，点一下它自己下载解压、装好接着播。默认地址是 Windows 的 essentials 构建，国内慢就改 `ffmpegUrl`。
+极少数没有内置包的平台（如 FreeBSD）若系统里也找不到 ffmpeg，会退回原声 / 只给下载，不会把播放搞坏。
 
 > 音效是**每一首现转**的：320k MP3 的转码成本很低（一首 4 分钟的歌在桌面上也就几秒跑完，边播边转只占其中一小截），换来的是「不换元素、不改 Web Audio」——iOS 后台播放才稳。这也是为什么宁可服务端多算一遍，也不在前端接 `createMediaElementSource`。
 
@@ -437,8 +441,9 @@ selfnas/
 ├── main.go           入口：flag、配置加载、路由表、启动横幅
 ├── fsops.go          文件操作：路径解析 / 列目录 / 上传分片 / 移动 / 删除
 ├── play.go           播放：探测编码、判断能否 copy、实时换封装出流
+├── hls.go            iPhone 专用 HLS：事件 m3u8 + 实时 ts 分片（Webkit 不吃渐进式 fMP4）
 ├── thumb.go          缩略图：视频抽帧 / 图片缩放，落盘缓存
-├── prep.go           预转码：提前把要转的落盘，播放时不用等
+├── prep.go           预转码：提前把要转的落盘，播放时不用等（含 HEVC `hev1`→`hvc1` 无损换标签）
 ├── share.go          播放器直链：/api/fs/link 签发短期签名 /f 直链（给 Infuse/VLC 用）
 ├── webdav.go         WebDAV：/dav/ 挂载（安卓 / Windows / macOS 直接读写，后台传输）
 ├── scoped.go         受限账号：白名单文件夹 + 各自读写权限，网页 / WebDAV / SMB 共用
@@ -455,17 +460,19 @@ selfnas/
 ├── art.go            封面与歌词：抠内嵌图、找同目录 cover.jpg / 同名 .lrc
 ├── eq.go             后端 EQ：滤波链、边转边发、响度均衡、按字节换算 seek
 ├── subsonic.go       Subsonic 兼容层 /rest/*（App 直连，含真实容器嗅探）
-├── dlna.go           视频投屏：SSDP 发现 + SOAP 控制（AVTransport）
+├── dlna.go           视频投屏：SSDP 发现 + 手动填 IP + SOAP 控制（AVTransport）
 ├── store_api.go      「最近 / 收藏 / 播放进度 / 刚点开」接口
 ├── theme.go          文件站皮肤（七套 CSS 变量预设）
 ├── api.go            鉴权、管理台接口、/api/state
 ├── autostart.go      开机自启（分平台：计划任务 / systemd / launchd）
 ├── autostart_unit.go systemd unit 与 launchd plist 的文本模板
 ├── disk_windows.go   枚举盘符
-├── disk_linux.go     枚举家目录 + /media、/mnt 下的已挂载存储
+├── disk_linux.go     枚举家目录 + /media、/mnt 下的已挂载存储；自动挂载未挂载的数据盘
 ├── disk_darwin.go    枚举家目录 + /Volumes 下的真实卷
 ├── disk_mountinfo.go 解析 /proc/self/mountinfo
-├── ffmpeg_dl.go      ffmpeg 一键下载安装
+├── ffbundle.go       内置 ffmpeg：go:embed 压缩包，首次用到时释放到 cache/ffbundle-<平台>/
+├── ffbundle_*.go     五个平台各自的 embed 声明 + 无内置包平台的兜底
+├── ffmpeg_dl.go      ffmpeg 一键下载安装（内置之后基本用不上，留作兜底）
 ├── update.go         版本检查（手动触发，结果落缓存）
 ├── db.go             SQLite（modernc.org/sqlite，纯 Go 无 cgo）
 ├── qr.go             二维码 token 与地址拼装
@@ -500,8 +507,9 @@ selfnas/
 | GET | `/api/fs/roots` | 根目录列表（含盘符） |
 | GET | `/api/fs/list` | 列目录 `?root=&path=` |
 | POST | `/api/fs/upload` | 分片上传（带区间记录，可续传） |
-| GET | `/api/fs/playinfo` | 这个文件能不能播、要不要换封装 |
+| GET | `/api/fs/playinfo` | 这个文件能不能播、要不要换封装（含视频编码探测） |
 | GET | `/api/fs/play` | 换封装后的 MP4 流 |
+| GET | `/api/fs/hls.m3u8` `/hls/seg` | iPhone / iPad 用的 HLS 播放列表与 ts 分片 |
 | POST | `/api/fs/link` | 生成签名直链（给外部播放器 / 投屏 / 锁屏封面） |
 | GET | `/api/fs/recent` | 最近浏览 |
 | POST | `/api/fs/fav` | 收藏 / 取消收藏（同一接口 toggle） |
@@ -516,17 +524,18 @@ selfnas/
 | POST | `/api/music/scan` | 触发一次扫描 |
 | GET | `/api/music/status` | 扫描进度（done / total） |
 | GET | `/api/music/artists` `/albums` `/tracks` | 歌手 / 专辑 / 曲目（带 `q` 规格字段） |
-| GET/POST/PATCH/DELETE | `/api/music/playlist` | 歌单：列 / 建 / 改名 / 删 |
-| GET/POST/DELETE | `/api/music/playlist/items` | 歌单条目：列 / 加（可批量）/ 移除 |
+| GET/POST/PATCH/DELETE | `/api/music/playlist` | 歌单：列 / 建 / 改名 / 删（列时带 `?hasroot=&haspath=` 可让每个歌单回 `contains`：「这首歌已经在里面」） |
+| GET/POST/DELETE | `/api/music/playlist/items` | 歌单条目：列 / 加（可批量，后端查重）/ 移除 |
 | POST | `/api/music/fav` | 收藏单曲（toggle） |
 | GET | `/api/music/appinfo` | 给 App 看的连接信息（Subsonic 地址） |
 | POST | `/api/dlna/devices` `/play` `/stop` | 投屏：发现 / 推 / 停 |
+| POST | `/api/dlna/manual` | 手动直连一台电视的 IP 并加进设备列表（组播被路由器拦时用，持久化到 config） |
 | * | `/rest/<endpoint>` | Subsonic 兼容层（App 直连，独立鉴权） |
 | GET | `/api/fs/stats` | 条数与数据库占用 |
 | GET/POST | `/api/scoped` | 受限账号：列 / 增删改 |
 | POST | `/api/scoped/perm` | 改某个白名单文件夹的读写权限 |
 | POST | `/api/smb/takeover` / `/api/smb/restore` | 接管 445 / 还回去 |
-| POST | `/api/roots/rescan` | 重新扫描磁盘 |
+| POST | `/api/roots/rescan` | 重新扫描磁盘（Linux 顺带自动挂载未挂载的盘，返回 `mounted`） |
 | POST | `/api/autostart` | 开机自启开关 |
 | POST | `/api/update/check` | 手动检查 GitHub 新版本（不自动轮询） |
 | GET | `/api/logs/tail` | 日志尾部 |
@@ -584,7 +593,11 @@ cp selfnas.db selfnas.db-wal selfnas.db-shm config.json /somewhere/
 
 **iOS Safari 只认 MP4 / MOV 系容器。** 但里面装的往往就是 HEVC / H.264 + AAC —— 编码手机硬解得动，只是壳不对。所以换封装（`-c:v copy`）就够了，根本不用转码。
 
-**换封装出来的流不能拖进度。** fragmented MP4 是为边下边播设计的，没有文件末尾的索引。所以进度条会明确提示「暂不支持拖动」，而不是让你拖半天没反应。
+**换封装出来的流不能拖进度。** fragmented MP4 是为边下边播设计的，没有文件末尾的索引。所以进度条会明确提示「暂不支持拖动」，而不是让你拖半天没反应。绕开它的办法是**别实时出流**：要么一次性把成品落盘（预转码 / 只换标签），要么给 iPhone 走 HLS 分片，这两条路都能拖。
+
+**Apple 只认 `hvc1`，`hev1` 会黑屏 —— 而且浏览器能力检测会骗你。** 4K HEVC 的 MP4 在 iPhone 上一点播就是黑的，`canPlayType()` 说支持，`MediaCapabilities` 回 `supported=1`（细看 `smooth=0`），一路查下来会误判成「手机解不开，只能转码」。真凶在 `ffprobe` 的 `codec_tag_string`：Apple 的管线只收 `hvc1`，而压制工具常写 `hev1`。`-c copy -tag:v hvc1` 无损换标签（4 GB 约 27 秒，一次生成缓存）之后就是原画质直连、进度随便拖。**以后遇到黑屏先看这一行，别先动转码。**
+
+**WebKit 会悄悄丢掉渐进式 fMP4。** 没有 `Content-Length`、只靠 chunked 推的 fragmented MP4，Safari 拿几秒（约 5 MB）就停，不报错、画面卡住不动 —— 查服务端一切正常。iPhone / iPad（包括 iOS 上的 Chrome，内核仍是 WebKit）必须走 HLS：事件型 m3u8 + ts 分片，服务端实时出、按 Range 找片段，没有请求几分钟就自动清缓存。
 
 **iPhone 上下载图片等于没下载。** Safari 会把 `a[download]` 的产物塞进「文件」App 的下载目录深处，用户基本找不到。涉及存图的地方要优先走系统分享面板（可以直接「存储到照片」），局域网 http 拿不到 Web Share 时，就明确提示「长按图片 → 存储到照片」——这是 iOS 上唯一靠得住的原生手势。
 
@@ -646,7 +659,7 @@ cp selfnas.db selfnas.db-wal selfnas.db-shm config.json /somewhere/
 
 ## 状态
 
-个人项目，自用为主。已实现：文件管理、文本与 Markdown 预览、视频播放（含换封装与进度记忆）、播放器直链、DLNA 投屏、WebDAV 挂载、SMB 共享、受限账号与文件夹白名单、扫码登录、最近 / 收藏 / 刚点开、七套皮肤、分享海报、版本检查、三平台开机自启、ffmpeg 一键安装、缩略图、PWA、管理台；以及音乐这一整块 —— 曲库扫描、播放页（黑胶 / 歌词 / 歌单 / 收藏 / 迷你条 / 队列）、后端 EQ 五预设与音量一致、Hi-Res / 无损标记、Subsonic 兼容层。
+个人项目，自用为主。已实现：文件管理、文本与 Markdown 预览、视频播放（换封装 / HEVC 标签修复 / iPhone HLS / 进度记忆）、播放器直链、DLNA 投屏（含手动填 IP）、WebDAV 挂载、SMB 共享、受限账号与文件夹白名单、扫码登录、最近 / 收藏 / 刚点开、七套皮肤、分享海报、版本检查、三平台开机自启、五平台内置 ffmpeg、Linux 启动自动挂载数据盘、缩略图、PWA、管理台；以及音乐这一整块 —— 曲库扫描、播放页（黑胶 / 歌词 / 歌单 / 收藏 / 迷你条 / 队列）、后端 EQ 五预设与音量一致、Hi-Res / 无损标记、Subsonic 兼容层。
 
 计划中：Tailscale 一键接入（现在只能识别，不能配置）、回收站、转码并发上限、缓存清理入口、Subsonic 的收藏与播放上报（`star` / `scrobble`）。
 

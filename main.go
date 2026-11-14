@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-const version = "0.21.1"
+const version = "0.21.2"
 
 //go:embed web
 var webFS embed.FS
@@ -69,6 +69,9 @@ type Config struct {
 	// md5(明文+salt) token 鉴权服务 —— PBKDF2/NT hash 都不可逆，算不出 token。
 	// 在任何知道明文密码的时刻写入：网页登录、改密码、建共享账号。
 	PassEnc string `json:"passEnc,omitempty"`
+	// 手动指定的 DLNA 渲染器（电视/盒子）地址，格式 "ip" 或 "ip:port"（默认端口 49152）。
+	// 路由器把「有线↔无线」组播桥接关掉、SSDP 发现失效时，靠单播直连绕过组播。
+	DlnaManual []string `json:"dlnaManual,omitempty"`
 }
 
 // DriveInfo 系统盘符信息（仅用于展示与首次生成默认配置）
@@ -181,6 +184,20 @@ func main() {
 	// 常驻监听 SSDP 组播：电视/盒子一上线（主动广播）就进设备缓存，
 	// 用户点「推到电视」时列表里已经有它了 —— 很多国产盒子不应答 M-SEARCH，只能这么逮
 	dlnaListenStart()
+	dlnaLoadManual()
+
+	// 启动即自动挂载未挂载的盘（Linux）。用户不必再进管理台点「刷新硬盘」：
+	// 服务随系统自启时常比 udev/USB 枚举还早，盘没就绪第一遍会扑空，
+	// 所以 10 秒后再兜底补挂一次（autoMountHook 幂等，已挂的会跳过）。
+	go func() {
+		if m := autoMountHook(); len(m) > 0 {
+			log.Printf("[磁盘] 启动自动挂载: %v", m)
+		}
+		time.Sleep(10 * time.Second)
+		if m := autoMountHook(); len(m) > 0 {
+			log.Printf("[磁盘] 启动自动挂载(延迟补挂): %v", m)
+		}
+	}()
 
 	// 读上次「检查更新」的缓存结果（检查本身是用户点按钮触发的，不自动查）
 	loadUpdateCache()
@@ -857,12 +874,16 @@ func routes() http.Handler {
 	mux.HandleFunc("/api/fs/playinfo", guardAuth(handleFSPlayInfo))
 	// 换封装结果落盘成 MP4 缓存 → 能拖进度、能秒开（流式那条路做不到）
 	mux.HandleFunc("/api/fs/prep", guardAuth(handleFSPrep))
+	// HLS 直播转码：WebKit(Safari/iPhone)不吃渐进式 fMP4 流，原生 HLS 才稳，见 hls.go
+	mux.HandleFunc("/api/fs/hls.m3u8", guardAuth(handleHLSPlaylist))
+	mux.HandleFunc("/api/fs/hls/seg", guardAuth(handleHLSSeg))
 	mux.HandleFunc("/api/fs/cache/", guardAuth(handleFSCacheFile))
 	// 给外部播放器（VLC/Infuse/nPlayer）的短期签名直链 —— 它们自带解码器，MKV 直接播
 	mux.HandleFunc("/api/fs/link", guardAuth(handleFSLink))
 	mux.HandleFunc("/api/dlna/devices", guardAuth(handleDlnaDevices))
 	mux.HandleFunc("/api/dlna/play", guardAuth(handleDlnaPlay))
 	mux.HandleFunc("/api/dlna/stop", guardAuth(handleDlnaStop))
+	mux.HandleFunc("/api/dlna/manual", guardAuth(handleDlnaManual))
 	mux.HandleFunc("/f", handleSignedFile)
 	// WebDAV：让 iOS「文件」/安卓文件管理器/资源管理器直接挂载（后台传输，锁屏不断）
 	mountWebDAV(mux)

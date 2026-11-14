@@ -407,13 +407,19 @@ func handleFSPlayInfo(w http.ResponseWriter, r *http.Request) {
 		"playable":   !needRemux(name),
 		"unplayable": needRemux(name) && ffm == "",
 	}
-	if needRemux(name) && ffm != "" {
-		v, a := probeCodecs(full)
-		out["vcodec"] = v
-		out["acodec"] = a
-		// 视频是 H.264/HEVC 才能只换壳；其它得靠显卡转，4K 转码会吃满 GPU，
-		// 前端据此给一句「可能要等一下」的提示
-		out["copyVideo"] = v == "h264" || v == "hevc"
+	// 探真实编码：MP4/MOV/M4V 这类「浏览器认容器」的文件，里面可能是 HEVC——
+	// 电视能硬解，但 Windows 上的 Chrome 没有 HEVC 解码器会黑屏。前端要按 vcodec
+	// 决定「直链还是转码」，不能只看后缀。remux 容器本来就探，这里把原生容器也补上。
+	if ffm != "" {
+		ext := strings.ToLower(filepath.Ext(name))
+		if needRemux(name) || ext == ".mp4" || ext == ".m4v" || ext == ".mov" {
+			v, a := probeCodecs(full)
+			out["vcodec"] = v
+			out["acodec"] = a
+			// 视频是 H.264/HEVC 才能只换壳；其它得靠显卡转，4K 转码会吃满 GPU，
+			// 前端据此给一句「可能要等一下」的提示
+			out["copyVideo"] = v == "h264" || v == "hevc"
+		}
 	}
 	writeJSON(w, 0, "", out)
 }

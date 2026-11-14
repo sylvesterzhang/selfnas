@@ -832,13 +832,10 @@ function openViewer(e) {
     foot.innerHTML = '<button class="btn" id="pdfTab">在新页面打开（手机端推荐）</button>';
     $('pdfTab').addEventListener('click', () => window.open(dl + '&inline=1', '_blank'));
   } else if (e.kind === 'video') {
-    if (REMUX_VIDEO.test(e.name) || !NATIVE_VIDEO.test(e.name)) {
-      playRemux(e, dl);
-      return;
-    }
-    foot.innerHTML = PLAYER_BTN;
-    // 原生 mp4 也走自建控件：全屏/转屏的入口只有一套，别一半原生一半自建
-    mountVideo(dl + '&inline=1');
+    // 所有视频都先问 playinfo 拿真实编码：MP4 里可能是 HEVC（电视能解、
+    // 但 Windows 版 Chrome 解不开会黑屏），不能只看后缀就直链，必须按编码分流。
+    playSmart(e, dl);
+    return;
   } else {
     body.innerHTML = '<div class="viewer-msg">这个类型不能预览</div>';
     foot.innerHTML = '<a class="btn" href="' + dl + '">下载到本机</a>';
@@ -895,6 +892,7 @@ const MP_ICON = {
   loopOne: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/><path d="M11.6 10.1 13.2 9.2v5.6"/></svg>',
   loop: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>',
   list: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h11M4 12h11M4 17h7"/><path d="M18.5 10.5v7.2"/><circle cx="17" cy="18" r="1.8" fill="currentColor" stroke="none"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
   volOn: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z" fill="currentColor" stroke="none"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>',
   volOff: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z" fill="currentColor" stroke="none"/><path d="m16 9 6 6"/><path d="m22 9-6 6"/></svg>',
   // 音效：画一条波形，不画推子/滑杆 —— 这里全是固定预设，没有能拖的东西
@@ -1302,11 +1300,20 @@ function mountAudio(e, list) {
           '<span class="mp-t" id="mpDur">--:--</span>' +
         '</div>' +
         '<div class="mp-ctl">' +
-          '<div class="mp-now">' +
-            '<div class="mp-mini"><img id="mpMini" alt=""><i>' + MP_ICON.note + '</i></div>' +
-            '<div class="mp-info">' +
-              '<div class="mp-title" id="mpTitle"></div>' +
-              '<div class="mp-sub" id="mpSub"></div>' +
+          // 左右两翼对称分摊功能键：循环/随机/加歌单在左（歌名旁边），音量/列表在右。
+          // 原来五个全挤在右边、手机端左边整块空白，页面失衡
+          '<div class="mp-side mp-side-l">' +
+            '<div class="mp-now">' +
+              '<div class="mp-mini"><img id="mpMini" alt=""><i>' + MP_ICON.note + '</i></div>' +
+              '<div class="mp-info">' +
+                '<div class="mp-title" id="mpTitle"></div>' +
+                '<div class="mp-sub" id="mpSub"></div>' +
+              '</div>' +
+            '</div>' +
+            '<div class="mp-extra">' +
+              '<button class="mp-mode" id="mpLoop" title="顺序播放">' + MP_ICON.loop + '</button>' +
+              '<button class="mp-mode" id="mpShuffle" title="随机播放：关">' + MP_ICON.shuffle + '</button>' +
+              '<button class="mp-mode" id="mpPlBtn" title="把这首歌加入歌单">' + MP_ICON.plus + '</button>' +
             '</div>' +
           '</div>' +
           '<div class="mp-btns">' +
@@ -1314,7 +1321,7 @@ function mountAudio(e, list) {
             '<button class="mp-btn primary" id="mpPlay" title="播放">' + MP_ICON.play + '</button>' +
             '<button class="mp-btn" id="mpNext" title="下一首">' + MP_ICON.next + '</button>' +
           '</div>' +
-          '<div class="mp-right">' +
+          '<div class="mp-side mp-side-r">' +
             '<div class="mp-vol">' +
               '<button class="mp-mode" id="mpVolBtn" title="静音">' + MP_ICON.volOn + '</button>' +
               // 同一个音量控件：桌面横着放，手机端由 CSS 收成点喇叭才弹出的竖条
@@ -1322,8 +1329,6 @@ function mountAudio(e, list) {
                 '<input class="mp-vol-range" id="mpVol" type="range" min="0" max="100" value="100" aria-label="音量">' +
               '</div>' +
             '</div>' +
-            '<button class="mp-mode" id="mpLoop" title="顺序播放">' + MP_ICON.loop + '</button>' +
-            '<button class="mp-mode" id="mpShuffle" title="随机播放：关">' + MP_ICON.shuffle + '</button>' +
             '<button class="mp-mode" id="mpQueueBtn" title="播放列表">' + MP_ICON.list + '</button>' +
           '</div>' +
         '</div>' +
@@ -1345,6 +1350,15 @@ function mountAudio(e, list) {
   $('mpShuffle').addEventListener('click', mpToggleShuffle);
   $('mpLoop').addEventListener('click', mpToggleLoop);
   $('mpQueueBtn').addEventListener('click', () => mpToggleQueue());
+  // 加入歌单：复用列表行那个「选歌单」弹框，把当前正在听的这首列进去挑。
+  // 第二个参数 true = 在播放器里弹 → 弹框切深色皮肤，跟播放器一体的视觉
+  $('mpPlBtn').addEventListener('click', () => {
+    if (!MP.on) return;
+    const e = MP.list[MP.i];
+    if (!e) return;
+    const t = { root: e.root, path: e.path, title: mpLabel(e).title, name: e.name };
+    openPlPick(t, true);
+  });
   mpVolInit();   // 每次重挂 audio 元素都要把记忆的音量套回去
   $('mpFxBtn').addEventListener('click', (ev) => {
     ev.stopPropagation();
@@ -2449,6 +2463,41 @@ function canPlayHevc() {
   return hevcOK;
 }
 
+// 真实能力探测：MediaCapabilities 会向**系统硬件**问「这个编码串这台设备能不能解、
+// 流不流畅」，比 canPlayType 的『声明』可靠得多（Chrome 107+ / Safari 16.4+ 都支持，
+// 老浏览器自动退回 canPlayType）。同时测 Main(8bit) / Main10(10bit) 和 hvc1/hev1 两种标签，
+// 用 4K 参数问——因为片库里有 4K HEVC，能解 1080p 不代表能解 4K。
+// 结果整个会话缓存一次（硬件能力不会中途变）。
+let _hevcCap = null;
+async function hevcCap() {
+  if (_hevcCap) return _hevcCap;
+  let res = { ok: false, smooth: false, via: 'canPlayType' };
+  try {
+    const mc = navigator.mediaCapabilities;
+    if (mc && mc.decodingInfo) {
+      res.via = 'mediaCapabilities';
+      const cfgs = ['hvc1.1.6.L153.B0', 'hvc1.2.4.L153.B0', 'hev1.1.6.L153.B0', 'hev1.2.4.L153.B0'];
+      const infos = await Promise.all(cfgs.map((c) => mc.decodingInfo({
+        type: 'file',
+        video: {
+          contentType: 'video/mp4; codecs="' + c + '"',
+          width: 3840, height: 2160, bitrate: 25000000, framerate: 30,
+        },
+      })));
+      res.ok = infos.some((i) => i.supported);
+      res.smooth = infos.some((i) => i.smooth);
+    } else {
+      res.ok = canPlayHevc();
+      res.smooth = res.ok;
+    }
+  } catch (e) {
+    res.ok = canPlayHevc();
+    res.smooth = res.ok;
+  }
+  _hevcCap = res;
+  return res;
+}
+
 // 带计时回调的请求：prep 第一次要让 ffmpeg 把整部片换封装完（700MB 约 4 秒，
 // 真转码可能要几分钟），比普通接口慢得多，所以单独给长超时 + 界面走秒。
 async function apiWait(url, ms, onTick) {
@@ -2647,6 +2696,59 @@ function startFFGuide(e, dl) {
 // 想要「像 App 一样能拖进度」，光靠流式推是不行的 —— 流里没有索引，浏览器不知道往哪跳。
 // 所以服务端把结果**落盘成真正的 MP4（faststart）**，之后交给 ServeFile 走 Range：
 // 拖哪播哪、秒开、第二遍播放完全不占 CPU。第一次要等几秒（copy 不解码不编码）。
+// 所有视频的统一入口：先问 playinfo 拿真实编码，再分流。
+//   · 容器+编码浏览器都能吃（H.264 MP4 / 支持 HEVC 的 Safari）→ 直链秒开
+//   · HEVC 但客户端解不了（Windows 版 Chrome）→ 交给 playRemux 转成 H.264 流式播
+// 以前 .mp4 只看后缀就直链，遇到「HEVC 编码的 MP4」会黑屏；现在按真实编码判断。
+async function playSmart(e, dl) {
+  const body = $('viewerBody');
+  const foot = $('viewerFoot');
+  let info = null;
+  try {
+    const r = await api('/api/fs/playinfo?' + q(S.root, e.path));
+    if (r && r.code === 0) info = r.data;
+  } catch (err) {}
+  if (!info) { playRemux(e, dl); return; }   // 问不到就退给 remux 流程兜底
+
+  const srcV = info.vcodec || '';
+  // HEVC 的黑屏真因(2026-11-14 ffprobe 实锤)：库里 HEVC mp4 的标签是 hev1，
+  // Apple 系(iPhone 全部浏览器)只认 hvc1 → 静默失败，跟「解不开 HEVC」无关。
+  // 所以 HEVC 永远不直链原文件：只要设备有 HEVC 解码器(cap.ok)就先走换标签
+  // copy(-c copy -tag:v hvc1，无损、原生画质、可拖进度)；真解不了的设备才转 H.264。
+  // MediaCapabilities 的 supported/smooth 都只作参考——iPhone Chrome 上 smooth=0
+  // 但硬解 4K HEVC 毫无压力，别信它。
+  const cap = await hevcCap();
+  const need264 = srcV !== 'h264' && !(srcV === 'hevc' && cap.ok);
+  clog('playSmart ' + e.name + ' v=' + (srcV || '?') + ' a=' + (info.acodec || '?') +
+    ' 探测=' + cap.via + ' 可解=' + (cap.ok ? 1 : 0) + ' 流畅=' + (cap.smooth ? 1 : 0) +
+    ' 要h264=' + (need264 ? 1 : 0));
+
+  // HEVC → 一律进 playRemux：有解码器换标签 hvc1，没有转 H.264。失败由兜底救。
+  if (srcV === 'hevc') {
+    playRemux(e, dl);
+    return;
+  }
+
+  // 容器+编码浏览器都吃得下 → 直链秒开（H.264 MP4）
+  if (!need264 && info.playable) {
+    body.innerHTML = '';
+    foot.innerHTML = '<span class="vf-tip">原画质播放 · 可随意拖动进度</span>' + PLAYER_BTN +
+      '<a class="btn sm" href="' + dl + '">下载</a>';
+    const v = mountVideo(dl + '&inline=1');
+    hookNativeRotate(v, async () => {
+      const e2 = viewerEntry; if (!e2) return null;
+      try {
+        const r = await apiWait('/api/fs/prep?' + q(S.root, e2.path) + '&rot=1&mode=sync', 60000);
+        if (r && r.code === 0 && r.data && r.data.url) return r.data.url;
+      } catch (err) {}
+      return null;
+    });
+    return;
+  }
+  // 其余（其它编码 / 问不到信息）交给 playRemux 处理转码与后续兜底
+  playRemux(e, dl);
+}
+
 async function playRemux(e, dl) {
   const body = $('viewerBody');
   const foot = $('viewerFoot');
@@ -2674,12 +2776,13 @@ async function playRemux(e, dl) {
     startFFGuide(e, dl);
     return;
   }
-  const hevcOK = canPlayHevc();
+  const cap = await hevcCap();
   const srcV = info.vcodec || '';
-  // 这个客户端要的是 H.264 还是能直接吃源编码
-  const need264 = srcV !== 'h264' && !(srcV === 'hevc' && hevcOK);
+  // 与 playSmart 一致：设备有 HEVC 解码器(cap.ok)就先换标签 hvc1 直链(smooth 不作数，
+  // iPhone Chrome 报 0 但硬解没问题)；真没有解码器才转 H.264。
+  const need264 = srcV !== 'h264' && !(srcV === 'hevc' && cap.ok);
   clog('播放 ' + e.name + ' v=' + (srcV || '?') + ' a=' + (info.acodec || '?') +
-    ' 客户端支持HEVC=' + (hevcOK ? 1 : 0) + ' 要h264=' + (need264 ? 1 : 0));
+    ' 探测=' + cap.via + ' 可解=' + (cap.ok ? 1 : 0) + ' 要h264=' + (need264 ? 1 : 0));
 
   const prepBase = '/api/fs/prep?' + q(S.root, e.path) + (need264 ? '&enc=h264' : '');
   const prep264 = '/api/fs/prep?' + q(S.root, e.path) + '&enc=h264';
@@ -2774,25 +2877,50 @@ async function playRemux(e, dl) {
         api('/api/fs/prep?' + q(S.root, e.path) + '&rot=1&mode=bg').catch(() => {});
       }
     }, { once: true });
-    // 缓存里存的是 HEVC(hvc1)：浏览器若嘴上说支持、实际解不了，这里同样会黑屏。
-    // 4 秒还没画面就切流式转码，并让后台把 H.264 版本慢慢做好（下次可拖）。
+    // 缓存里存的是 HEVC(hvc1)：浏览器若探测说能解、实际放不动，这里同样会黑屏。
+    // error / 4 秒无画面都切流式转码（与 playSmart 兜底同口径），并让后台把
+    // H.264 版本做好（下次可拖）。
     if (srcV !== 'hevc' || transcoded) return;
-    setTimeout(() => {
-      if (!v.isConnected || v.error || v.videoWidth > 0) return;
-      clog('缓存MP4黑屏兜底：切转码流 name=' + e.name + ' readyState=' + v.readyState);
+    let switched = false;
+    const fb = (why) => {
+      if (switched || !viewerEntry || viewerEntry.path !== e.path) return;
+      switched = true;
+      clog('缓存MP4兜底(' + why + ')：切转码 name=' + e.name + ' readyState=' + v.readyState);
+      toast('这个设备实际播不动 HEVC 原片，已自动切换转码模式');
       startBgTranscode().then((u) => {
         if (u) { playFile(u, true); return; }   // 转码缓存已经在了，直接换过去，还能拖
         playStream(true);
       });
+    };
+    v.addEventListener('error', () => fb('error'));
+    setTimeout(() => {
+      if (switched || !v.isConnected || v.error || v.videoWidth > 0) return;
+      fb('黑屏4s');
     }, 4000);
   }
 
-  // 流式：边转边推，能看但不能拖。只在「拿不到 MP4 缓存」时用
+  // 流式：边转边推。只在「拿不到 MP4 缓存」时用。
+  // 这个模式必须给用户说清楚（用户反馈：不知道为什么有的片能拖有的不能）——
+  // 底栏常驻提示 + 进入时 toast 明说。
   function playStream(transcode) {
-    const url = '/api/fs/play?' + q(S.root, e.path) + (transcode ? '&vc=h264' : '');
-    const tips = [transcode ? '边转边播' : '原画质直通', transcode ? '这个模式不能拖进度（下次打开就能拖了）' : '这个模式不能拖进度'];
+    // WebKit(Safari/iPhone/iPad 全系，含 iOS 上的 Chrome——渲染层都是 WKWebView)
+    // 不吃「无长度、无 Range」的渐进式 fMP4 流，拉几 MB 就掐线黑屏(2026-11-14 实测)；
+    // 它原生支持 HLS，走 hls.go 的 m3u8。桌面/安卓的 Blink 继续走 fMP4 流。
+    const ua = navigator.userAgent;
+    const useHLS = transcode && (/iP(hone|ad|od)/.test(ua) ||
+      (/Safari\//.test(ua) && !/Chrom|CriOS|FxiOS|EdgiOS|Edg\//.test(ua)));
+    const url = useHLS
+      ? '/api/fs/hls.m3u8?' + q(S.root, e.path)
+      : '/api/fs/play?' + q(S.root, e.path) + (transcode ? '&vc=h264' : '');
+    const tips = transcode
+      ? ['边转边播 · 服务器正在把这部片转成浏览器能放的格式',
+         '已转好的部分可以拖动 · 后台转完后下次打开就能随意拖']
+      : ['原画质直通 · 不转码', '已转好的部分可以拖动'];
     foot.innerHTML = '<span class="vf-tip">' + esc(tips.join(' · ')) + '</span>' + PLAYER_BTN +
       '<a class="btn sm" href="' + dl + '">下载</a>';
+    if (transcode) {
+      toast('这部片正在边转边播：缓冲几秒属正常；后台转完后，下次打开即可随意拖动进度');
+    }
     const v = mountVideo(url);
     if (transcode) return;
 
@@ -2808,7 +2936,7 @@ async function playRemux(e, dl) {
   }
 
   function playStreamRaw(url, at) {
-    foot.innerHTML = '<span class="vf-tip">正在转码 · 这个模式不能拖进度</span>' + PLAYER_BTN +
+    foot.innerHTML = '<span class="vf-tip">边转边播 · 已转好的部分可以拖动 · 后台转完后下次打开可随意拖</span>' + PLAYER_BTN +
       '<a class="btn sm" href="' + dl + '">下载</a>';
     mountVideo(url);
   }
@@ -2933,6 +3061,24 @@ $('viewerCast').addEventListener('click', () => {
 });
 $('castCancel').addEventListener('click', () => $('castSheet').classList.remove('on'));
 $('castRefresh').addEventListener('click', () => castDiscover(true));
+
+// 手动添加电视：SSDP 组播被路由器掐掉时，直接填 IP 单播直连，绕开发现。
+$('castManualAdd').addEventListener('click', async () => {
+  const ip = $('castManualIp').value.trim();
+  if (!ip) { toast('先填电视的 IP'); return; }
+  const btn = $('castManualAdd');
+  btn.disabled = true; btn.textContent = '连接中…';
+  try {
+    const r = await api('/api/dlna/manual', { ip });
+    if (r.code !== 0) { toast(r.msg || '添加失败'); return; }
+    toast('已添加「' + (r.data && r.data.name ? r.data.name : '电视') + '」');
+    castDiscover(true); // 刷新列表，手动设备会进来
+  } catch (e) {
+    toast('添加失败，检查 IP 是否正确');
+  } finally {
+    btn.disabled = false; btn.textContent = '添加这台电视';
+  }
+});
 
 async function castDiscover(force) {
   $('castBody').innerHTML = '<div class="cast-status">正在找局域网里的电视…</div>';
@@ -5645,7 +5791,7 @@ let plPickExist = new Set();    // 已经在歌单里的 root|path（置灰不�
 let plPickRoot = '';            // 文件夹筛选：'' = 全部，否则是某个曲库目录（跟全部曲目的 rootFilter 一个口径）
 let plPickSearchTimer = 0;
 
-function openPlPick(t) {
+function openPlPick(t, inPlayer) {
   plPickMode = 'target';
   plPickTrack = { root: t.root, path: t.path };
   $('plPickTitle').textContent = '加入歌单';
@@ -5660,7 +5806,18 @@ function openPlPick(t) {
   pf.hidden = true;
   pf.innerHTML = '';
   $('plPick').classList.add('on');
+  $('plPick').classList.add('tmode');   // 单曲选歌单：窄弹框（多选模式是宽的双列）
+  // 播放器里弹的走深色皮肤：播放器是单独的一套固定深色视觉，
+  // 外面主题的浅色弹框盖上去会像「贴错了地方」
+  $('plPick').classList.toggle('dark', !!inPlayer);
   loadPlPick();
+}
+
+// 统一收口：关弹框顺带把单曲窄框 / 深色皮肤两个模式 class 摘掉
+function closePlPick() {
+  $('plPick').classList.remove('on');
+  $('plPick').classList.remove('tmode');
+  $('plPick').classList.remove('dark');
 }
 
 // 歌单详情的「＋ 加歌」：多选曲库 → 一次性加进当前歌单
@@ -5683,7 +5840,7 @@ async function openPlPickTracks(items) {
   loadPlPickTracks();
 }
 
-$('plPickCancel').addEventListener('click', () => $('plPick').classList.remove('on'));
+$('plPickCancel').addEventListener('click', closePlPick);
 $('plPickSearch').addEventListener('input', () => {
   clearTimeout(plPickSearchTimer);
   plPickSearchTimer = setTimeout(loadPlPickTracks, 250);
@@ -5703,8 +5860,8 @@ $('plPickOk').addEventListener('click', async () => {
   if (!tracks.length) { $('plPickErr').textContent = '先点几首歌再加入'; return; }
   const rr = await api('/api/music/playlist/items', { id: MU.plId, tracks: tracks });
   if (rr.code !== 0) { $('plPickErr').textContent = rr.msg; return; }
-  $('plPick').classList.remove('on');
-  toast('已加入 ' + tracks.length + ' 首到「' + MU.plName + '」');
+  closePlPick();
+  toast(rr.msg && rr.msg !== '已加入歌单' ? rr.msg : '已加入 ' + tracks.length + ' 首到「' + MU.plName + '」');
   muLoad();
 });
 
@@ -5775,18 +5932,26 @@ function updatePlPickOk() {
 }
 
 async function loadPlPick() {
-  const r = await api('/api/music/playlist');
+  // 单曲选歌单模式：顺带问后端这首歌已经在哪些歌单里 → 「已在」置灰，点了提醒不重复加
+  let url = '/api/music/playlist';
+  if (plPickMode === 'target' && plPickTrack) {
+    url += '?hasroot=' + encodeURIComponent(plPickTrack.root) + '&haspath=' + encodeURIComponent(plPickTrack.path);
+  }
+  const r = await api(url);
   const box = $('plPickList');
   box.innerHTML = '';
   (r.data || []).forEach((p) => {
+    const has = !!p.contains;
     const it = document.createElement('div');
-    it.className = 'mu-row pl';
+    it.className = 'mu-row pl' + (has ? ' dis' : '');
     it.innerHTML = '<span class="mu-pl-ico">' + MU_ICON.pl + '</span>' +
-      '<span class="mu-main"><b><span class="mu-t">' + esc(p.name) + '</span></b><i>' + p.count + ' 首</i></span>';
+      '<span class="mu-main"><b><span class="mu-t">' + esc(p.name) + '</span></b><i>' + p.count + ' 首</i></span>' +
+      (has ? '<span class="mu-tag">已在</span>' : '');
     it.addEventListener('click', async () => {
+      if (has) { $('plPickErr').textContent = '这首歌已经在「' + p.name + '」里了，不用重复加'; return; }
       const rr = await api('/api/music/playlist/items', { id: p.id, tracks: [plPickTrack] });
       if (rr.code !== 0) { $('plPickErr').textContent = rr.msg; return; }
-      $('plPick').classList.remove('on');
+      closePlPick();
       toast('已加入「' + p.name + '」');
     });
     box.appendChild(it);
@@ -5804,7 +5969,7 @@ $('plPickNew').addEventListener('click', async () => {
   if (!p) { $('plPickErr').textContent = '创建成功但没找到歌单'; return; }
   const rr = await api('/api/music/playlist/items', { id: p.id, tracks: [plPickTrack] });
   if (rr.code !== 0) { $('plPickErr').textContent = rr.msg; return; }
-  $('plPick').classList.remove('on');
+  closePlPick();
   toast('已创建并加入「' + name + '」');
 });
 $('plPickName').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('plPickNew').click(); });
