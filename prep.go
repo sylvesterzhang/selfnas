@@ -262,18 +262,25 @@ func handleFSPrep(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 0, "", map[string]any{"url": dl, "how": "原生", "ready": true})
 		return
 	}
-	// mp4/m4v/mov：默认原生直链。但 HEVC 的 mp4 **不能**给原生直链——库里常见 hev1 标签
-	// (2026-11-14 ffprobe 实锤四个春天=hev1)，Apple 系(iPhone 全部浏览器)只认 hvc1，
-	// 直链必黑屏。HEVC 要落下去走换标签 copy(-c copy -tag:v hvc1，无损不重编码)。
+	// mp4/m4v/mov：默认原生直链。只有「HEVC 且标签是 hev1」才需要换标签——
+	// (2026-11-14 实锤四个春天=hev1) Apple 系只认 hvc1，直链必黑屏。
+	// 但库里大量 HEVC MP4 本来就是 hvc1（iPhone 自己拍的 IMG_*.MP4 全是），
+	// 这些直链就能播；换标签得把整片复制一遍，ARM 盒子上 604MB 要 58 秒，
+	// 用户干等一分钟还容易中途断线 → 2026-11-15 在 196 上被用户抓到「MP4 播不了」。
+	// 探不出 tag 时保守走老路（继续换标签），已知是 hvc1 就直接原生直链。
 	// enc=h264 是明确要求转 H.264(设备真没有 HEVC 解码器时)；源本就是 H.264 的直链即可。
 	if !rot && (ext == ".mp4" || ext == ".m4v" || ext == ".mov") {
 		vc0, _ := probeCodecs(full)
 		if enc != "h264" {
-			if vc0 != "hevc" {
-				writeJSON(w, 0, "", map[string]any{"url": dl, "how": "原生", "ready": true})
+			vt := ""
+			if vc0 == "hevc" {
+				vt = probeVideoTag(full)
+			}
+			if vc0 != "hevc" || (vt != "" && vt != "hev1") {
+				writeJSON(w, 0, "", map[string]any{"url": dl, "how": "原生", "ready": true, "vtag": vt})
 				return
 			}
-			// HEVC：继续往下走换标签 copy
+			// hev1（或 tag 未知）：继续往下走换标签 copy
 		} else if vc0 == "h264" {
 			// 要求转 H.264 但源本就是 H.264，直链即可，不必再转
 			writeJSON(w, 0, "", map[string]any{"url": dl, "how": "原生", "ready": true})

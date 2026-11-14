@@ -2468,6 +2468,14 @@ function canPlayHevc() {
 // 老浏览器自动退回 canPlayType）。同时测 Main(8bit) / Main10(10bit) 和 hvc1/hev1 两种标签，
 // 用 4K 参数问——因为片库里有 4K HEVC，能解 1080p 不代表能解 4K。
 // 结果整个会话缓存一次（硬件能力不会中途变）。
+// WebKit（iOS 上全部浏览器 + macOS Safari）不吃「无长度、无 Range」的渐进式 fMP4 流：
+// 拉几 MB 就掐线黑屏。只要走流式，一律改走 HLS（它原生支持 m3u8）。
+function isWebKitUA() {
+  const ua = navigator.userAgent;
+  return /iP(hone|ad|od)/.test(ua) ||
+    (/Safari\//.test(ua) && !/Chrom|CriOS|FxiOS|EdgiOS|Edg\//.test(ua));
+}
+
 let _hevcCap = null;
 async function hevcCap() {
   if (_hevcCap) return _hevcCap;
@@ -2711,28 +2719,24 @@ async function playSmart(e, dl) {
   if (!info) { playRemux(e, dl); return; }   // 问不到就退给 remux 流程兜底
 
   const srcV = info.vcodec || '';
-  // HEVC 的黑屏真因(2026-11-14 ffprobe 实锤)：库里 HEVC mp4 的标签是 hev1，
-  // Apple 系(iPhone 全部浏览器)只认 hvc1 → 静默失败，跟「解不开 HEVC」无关。
-  // 所以 HEVC 永远不直链原文件：只要设备有 HEVC 解码器(cap.ok)就先走换标签
-  // copy(-c copy -tag:v hvc1，无损、原生画质、可拖进度)；真解不了的设备才转 H.264。
-  // MediaCapabilities 的 supported/smooth 都只作参考——iPhone Chrome 上 smooth=0
-  // 但硬解 4K HEVC 毫无压力，别信它。
+  const vtag = (info.vtag || '').toLowerCase();
+  // HEVC 的黑屏真因(2026-11-14 实锤「四个春天」)：标签是 hev1，Apple 系只认 hvc1。
+  // 但**不是所有 HEVC 都要换标签**——iPhone 自己拍的 IMG_*.MP4 本来就是 hvc1，
+  // 旧版直链秒开、能拖进度。0.21.2 曾对 HEVC 一律换标签，196 上 604MB 复制 58 秒，
+  // 中途断线后退回流式播放 → iPhone 拿不到画面，用户看到「普通 MP4 都播不了」。
+  // 现在只认标签：hev1 才进 prep，其余（hvc1 / 探不到）一律原生直链 + 黑屏兜底。
+  // MediaCapabilities 的 smooth 只作参考——iPhone Chrome 上报 0 但硬解 4K 没问题。
   const cap = await hevcCap();
   const need264 = srcV !== 'h264' && !(srcV === 'hevc' && cap.ok);
-  clog('playSmart ' + e.name + ' v=' + (srcV || '?') + ' a=' + (info.acodec || '?') +
+  clog('playSmart ' + e.name + ' v=' + (srcV || '?') + ' tag=' + (vtag || '?') +
+    ' a=' + (info.acodec || '?') +
     ' 探测=' + cap.via + ' 可解=' + (cap.ok ? 1 : 0) + ' 流畅=' + (cap.smooth ? 1 : 0) +
     ' 要h264=' + (need264 ? 1 : 0));
 
-  // HEVC → 一律进 playRemux：有解码器换标签 hvc1，没有转 H.264。失败由兜底救。
-  if (srcV === 'hevc') {
-    playRemux(e, dl);
-    return;
-  }
-
-  // 容器+编码浏览器都吃得下 → 直链秒开（H.264 MP4）
-  if (!need264 && info.playable) {
+  // 原生直链：H.264 与「本来就是 hvc1」的 HEVC 共用，秒开且能随意拖。
+  function nativePlay(tip, hevc) {
     body.innerHTML = '';
-    foot.innerHTML = '<span class="vf-tip">原画质播放 · 可随意拖动进度</span>' + PLAYER_BTN +
+    foot.innerHTML = '<span class="vf-tip">' + tip + '</span>' + PLAYER_BTN +
       '<a class="btn sm" href="' + dl + '">下载</a>';
     const v = mountVideo(dl + '&inline=1');
     hookNativeRotate(v, async () => {
@@ -2743,6 +2747,36 @@ async function playSmart(e, dl) {
       } catch (err) {}
       return null;
     });
+    // 标签判错 / 设备嘴上说能解却黑屏时别把人卡死：4 秒没画面直接切转码。
+    // 不能退回 playRemux——hvc1 在 prep 里也是直链，等于换回同一个源，救不回来。
+    if (hevc) {
+      setTimeout(() => {
+        if (!v.isConnected || v.error || v.videoWidth > 0) return;
+        const at = Math.floor(v.currentTime || 0);
+        clog('原生 HEVC 直链 4 秒没画面，切转码：' + e.name + ' at=' + at);
+        const u = isWebKitUA()
+          ? '/api/fs/hls.m3u8?' + q(S.root, e.path)
+          : '/api/fs/play?' + q(S.root, e.path) + '&vc=h264' + (at > 1 ? '&t=' + at : '');
+        foot.innerHTML = '<span class="vf-tip">原片在这台设备上解不开，已切换为转码播放</span>' +
+          PLAYER_BTN + '<a class="btn sm" href="' + dl + '">下载</a>';
+        mountVideo(u);
+      }, 4000);
+    }
+  }
+
+  // HEVC：只有 hev1 才需要换标签；客户端真没有 HEVC 解码器(cap.ok=0)才转 H.264
+  if (srcV === 'hevc') {
+    if (vtag !== 'hev1' && cap.ok && info.playable) {
+      nativePlay('原画质播放 · 可随意拖动进度', true);
+      return;
+    }
+    playRemux(e, dl);
+    return;
+  }
+
+  // 容器+编码浏览器都吃得下 → 直链秒开（H.264 MP4）
+  if (!need264 && info.playable) {
+    nativePlay('原画质播放 · 可随意拖动进度', false);
     return;
   }
   // 其余（其它编码 / 问不到信息）交给 playRemux 处理转码与后续兜底
@@ -2906,9 +2940,10 @@ async function playRemux(e, dl) {
     // WebKit(Safari/iPhone/iPad 全系，含 iOS 上的 Chrome——渲染层都是 WKWebView)
     // 不吃「无长度、无 Range」的渐进式 fMP4 流，拉几 MB 就掐线黑屏(2026-11-14 实测)；
     // 它原生支持 HLS，走 hls.go 的 m3u8。桌面/安卓的 Blink 继续走 fMP4 流。
-    const ua = navigator.userAgent;
-    const useHLS = transcode && (/iP(hone|ad|od)/.test(ua) ||
-      (/Safari\//.test(ua) && !/Chrom|CriOS|FxiOS|EdgiOS|Edg\//.test(ua)));
+    const isWebKit = isWebKitUA();
+    // WebKit 一律 HLS：不光「边转边播」的流，非转码的渐进式 fMP4 它同样会在
+    // 几 MB 后掐线黑屏（2026-11-15 196 上 hvc1 的 IMG_1946 退回流式就是这么挂的）。
+    const useHLS = isWebKit;
     const url = useHLS
       ? '/api/fs/hls.m3u8?' + q(S.root, e.path)
       : '/api/fs/play?' + q(S.root, e.path) + (transcode ? '&vc=h264' : '');
@@ -2931,6 +2966,10 @@ async function playRemux(e, dl) {
       if (v.videoWidth > 0) return;
       const at = Math.floor(v.currentTime || 0);
       clog('黑屏兜底：说能解 HEVC 但没画面，切转码重试 at=' + at + 's readyState=' + v.readyState);
+      if (isWebKit) {
+        playStream(true);   // WebKit 的 fMP4 换汤不换药，直接上 HLS
+        return;
+      }
       playStreamRaw('/api/fs/play?' + q(S.root, e.path) + '&vc=h264' + (at > 1 ? '&t=' + at : ''), at);
     }, 4000);
   }

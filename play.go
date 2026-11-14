@@ -210,6 +210,51 @@ func probeCodecsViaFFmpeg(ff, file string) (vcodec, acodec string) {
 	return vcodec, acodec
 }
 
+// codecTagRe 从 ffmpeg -i 的 stderr 里抠视频流的 fourcc：
+//   Video: hevc (Main) (hvc1 / 0x31637668), yuvj420p...
+//   Video: h264 (High) (avc1 / 0x31637661), yuv420p...
+// Apple 只认 hvc1，标成 hev1 的 HEVC MP4 在 iPhone 上会静默黑屏。
+// 必须锚在 Video: 行上，否则音频流的 (mp4a / 0x...) 会被当成视频标签。
+var codecTagRe = regexp.MustCompile(`(?i)Video:.*\(([a-z0-9]{4}) / 0x[0-9a-f]+\)`)
+
+// 探测结果按「路径 + 大小 + 修改时间」缓存：一次播放里 playinfo / prep 会问好几遍，
+// 大文件跑一次 ffmpeg -i 在 ARM 盒子上要几百毫秒，别重复付这个钱。
+var vtagCache sync.Map
+
+// probeVideoTag 返回视频流的 codec tag（小写，如 hvc1 / hev1 / avc1），探不到返回 ""。
+// 只有 ffprobe 和「内置 ffmpeg -i 解析」两条路，跟 probeCodecs 的降级口径一致。
+func probeVideoTag(file string) string {
+	st, err := os.Stat(file)
+	if err != nil {
+		return ""
+	}
+	key := file + "\x00" + strconv.FormatInt(st.Size(), 10) + "\x00" + strconv.FormatInt(st.ModTime().UnixNano(), 10)
+	if v, ok := vtagCache.Load(key); ok {
+		return v.(string)
+	}
+	ff, probe := findFF()
+	tag := ""
+	if probe != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		out, e := exec.CommandContext(ctx, probe, "-v", "error", "-select_streams", "v:0",
+			"-show_entries", "stream=codec_tag_string", "-of", "default=nw=1:nk=1", file).Output()
+		cancel()
+		if e == nil {
+			tag = strings.ToLower(strings.TrimSpace(string(out)))
+		}
+	}
+	if tag == "" && ff != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		out, _ := exec.CommandContext(ctx, ff, "-hide_banner", "-i", file).CombinedOutput()
+		cancel()
+		if m := codecTagRe.FindStringSubmatch(string(out)); m != nil {
+			tag = strings.ToLower(m[1])
+		}
+	}
+	vtagCache.Store(key, tag) // 空结果也存，避免每个请求都重跑一遍 ffmpeg
+	return tag
+}
+
 // stderrTail 只留最后几 KB 的错误输出：ffmpeg 的报错够用就行，多了占内存
 type stderrTail struct {
 	buf []byte
@@ -419,6 +464,10 @@ func handleFSPlayInfo(w http.ResponseWriter, r *http.Request) {
 			// 视频是 H.264/HEVC 才能只换壳；其它得靠显卡转，4K 转码会吃满 GPU，
 			// 前端据此给一句「可能要等一下」的提示
 			out["copyVideo"] = v == "h264" || v == "hevc"
+			// 关键：HEVC 还要看 fourcc。库里既有 hev1（Apple 不认，得换标签）
+			// 也有 hvc1（本来就认，直链秒开）。2026-11-15 在 196 上把 hvc1 的
+			// IMG_1946.MP4 强制换标签，白复制 604MB、用户干等 1 分钟还播不了。
+			out["vtag"] = probeVideoTag(full)
 		}
 	}
 	writeJSON(w, 0, "", out)
