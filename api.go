@@ -78,7 +78,8 @@ func handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleState(w http.ResponseWriter, r *http.Request) {
-	tsUp, tsIP := tailscaleStatus()
+	// 内嵌节点为主（客户端已编进程序），用户另外装了官方客户端也认
+	tsUp, tsIP := tsActiveIP()
 	type rootView struct {
 		Name      string `json:"name"`
 		Path      string `json:"path"`
@@ -311,7 +312,15 @@ func handleRootsRescan(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(added) == 0 && len(mounted) == 0 {
-		writeJSON(w, 0, "没有发现新的磁盘", map[string]any{"added": added, "mounted": mounted})
+		msg := "没有发现新的磁盘"
+		// 扫不到不一定是没插盘：Linux 上常见的是「盘在、但没挂上」（没装自动挂载助手，
+		// 程序又没有权限替它挂）。把数字说出来，用户就知道该去装什么。
+		if n := unmountedPartitions(); n > 0 {
+			msg = fmt.Sprintf(
+				"没有发现新的磁盘：另有 %d 个分区有文件系统但没挂载（Linux 不会插盘即挂）。"+
+					"到「系统设置 → 开机自启动」下面装一下「外接盘自动挂载」，之后插盘就自动挂上了", n)
+		}
+		writeJSON(w, 0, msg, map[string]any{"added": added, "mounted": mounted})
 		return
 	}
 	if len(added) > 0 {

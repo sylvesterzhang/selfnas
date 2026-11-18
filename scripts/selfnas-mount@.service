@@ -1,0 +1,22 @@
+[Unit]
+Description=selfnas 外接盘自动挂载（/dev/%I）
+Documentation=https://github.com/zhanghuan/selfnas
+# 设备一消失就停 → ExecStop 把挂载摘掉，否则拔出后再插回来，
+# 挂载点被上次的「残影」占着，新盘要么挂不上要么挂在死目录上。
+#
+# ⚠️ 这里必须用 %i（转义后的实例名），不能用 %I：systemd 255 在 BindsTo/After
+# 这类依赖指令里不展开 %I，整条依赖会被当成非法单元名静默丢弃 —— 表现为
+# systemctl show 里 BindsTo 是空的，拔盘时不会触发卸载。ExecStart 里则相反，
+# %I 才是要的那个（拿到未转义的设备名）。两个别写反。
+BindsTo=dev-%i.device
+After=dev-%i.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/selfnas-mount.sh add %I
+ExecStop=/usr/local/bin/selfnas-mount.sh remove %I
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target

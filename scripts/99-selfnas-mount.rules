@@ -1,0 +1,10 @@
+# selfnas：外接盘插入即自动挂载。
+#
+# 开机时 udev 会对已有设备补发 add 事件（冷插拔），所以这一个规则同时覆盖
+# 「开机自动挂载」和「运行中热插拔」两种情况，不需要再写 fstab。
+#
+# 这里只负责点火：systemd-udevd 带 PrivateMounts=yes，它自己做的挂载留在
+# 私有命名空间里，外面的程序看不见。真正的 mount 由 selfnas-mount@.service 执行。
+# 卸载走服务的 ExecStop（配 BindsTo=dev-%I.device），拔盘时自动触发。
+
+ACTION=="add", SUBSYSTEM=="block", ENV{DEVTYPE}=="partition", ENV{ID_FS_USAGE}=="filesystem", TAG+="systemd", ENV{SYSTEMD_WANTS}+="selfnas-mount@%k.service"

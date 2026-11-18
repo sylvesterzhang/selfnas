@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-const version = "0.21.2"
+const version = "0.21.3"
 
 //go:embed web
 var webFS embed.FS
@@ -72,6 +72,23 @@ type Config struct {
 	// 手动指定的 DLNA 渲染器（电视/盒子）地址，格式 "ip" 或 "ip:port"（默认端口 49152）。
 	// 路由器把「有线↔无线」组播桥接关掉、SSDP 发现失效时，靠单播直连绕过组播。
 	DlnaManual []string `json:"dlnaManual,omitempty"`
+	// 远程访问（内嵌 Tailscale 节点，不走外部客户端）：上次是不是开着，开机自动恢复。
+	TsEnabled bool `json:"tsEnabled,omitempty"`
+	// 这个节点在 tailnet 里显示成什么名字（默认 selfnas）。它同时是 MagicDNS 的前缀。
+	TsHostname string `json:"tsHostname,omitempty"`
+
+	// 外网访问（Cloudflare Tunnel，cloudflared 编在本程序里）。
+	// CfMode 为 quick（或空）= 免注册，CF 随机给一个 trycloudflare.com 地址，
+	// **进程重启就换新地址**；named = 用你自己的域名 + 隧道 token，地址永久固定。
+	CfMode string `json:"cfMode,omitempty"`
+	// named 模式要填的两样：自己的域名（nas.example.com）和控制台的 Tunnel Token。
+	// token 等价于这条隧道的密码，只存在本机 config.json（权限 0600），不进日志。
+	CfHost  string `json:"cfHost,omitempty"`
+	CfToken string `json:"cfToken,omitempty"`
+	// 上次开着的就开机自动恢复。
+	CfAuto bool `json:"cfAuto,omitempty"`
+	// 上一次分到的临时地址。只用来判断「重启后地址变了」，好提醒用户旧地址失效了。
+	CfLastURL string `json:"cfLastUrl,omitempty"`
 }
 
 // DriveInfo 系统盘符信息（仅用于展示与首次生成默认配置）
@@ -152,9 +169,13 @@ func main() {
 		}()
 	}
 
+	h := routes()
+	// 内嵌 Tailscale 节点收到请求后交给同一套路由（见 tunnel_ts.go），
+	// 所以外网访问和局域网访问走的是同一份鉴权/权限代码，不存在第二套逻辑。
+	mainHandler = h
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           routes(),
+		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -201,6 +222,13 @@ func main() {
 
 	// 读上次「检查更新」的缓存结果（检查本身是用户点按钮触发的，不自动查）
 	loadUpdateCache()
+
+	// 上次开着远程访问就自动恢复；客户端已内嵌，不需要用户装任何东西
+	go tsAutoStart()
+
+	// 外网访问（Cloudflare）：上次开着就重启。quick 模式会拿到**新地址**（CF 的规则），
+	// 前端靠 prevUrl/changed 提示用户「发出去的旧地址已经失效」。
+	go cfAutoStart()
 
 	// Ctrl+C / SIGTERM 时先停 HTTP、再关库（defer closeDB 会做 checkpoint）。
 	//
@@ -317,16 +345,16 @@ const defaultPassword = "123456"
 
 func bootstrapConfig() error {
 	cfg = Config{
-		Port:              8080,
-		Bind:              "0.0.0.0",
-	User:              "admin",
-	PassHash:          hashPassword(defaultPassword),
-	Secret:            randomHex(32),
-	// 管理台默认不限本机：部署到 Linux/NAS/ARM 这类无头机器时，管理台几乎都是从
-	// 别的电脑浏览器打开的 —— 若默认锁「仅本机」，装完就被挡在门外、连设置都进不去
-	// （2026-11-01 用户反馈）。家用局域网默认开放可接受；要收紧就在管理台关掉，
-	// 或 config.json 把 adminOnlyLocal 改 true。
-	AdminOnlyLocal:    false,
+		Port:     8080,
+		Bind:     "0.0.0.0",
+		User:     "admin",
+		PassHash: hashPassword(defaultPassword),
+		Secret:   randomHex(32),
+		// 管理台默认不限本机：部署到 Linux/NAS/ARM 这类无头机器时，管理台几乎都是从
+		// 别的电脑浏览器打开的 —— 若默认锁「仅本机」，装完就被挡在门外、连设置都进不去
+		// （2026-11-01 用户反馈）。家用局域网默认开放可接受；要收紧就在管理台关掉，
+		// 或 config.json 把 adminOnlyLocal 改 true。
+		AdminOnlyLocal:    false,
 		UploadConcurrency: 2,
 		SessionDays:       3650,
 		// SMB 默认关：WebDAV 对安卓/电脑都能用，只有 iOS 才需要 SMB，
@@ -753,19 +781,26 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-func isLocalOrTailscale(ipStr string) bool {
-	ip := net.ParseIP(ipStr)
+// isLocalRequest 判断这个请求是不是「就在这台机器上」发出来的。
+//
+// 只认两种来源：回环地址（本机浏览器 / curl），和本机自己的网卡 IP（用 192.168.x.x 访问自己）。
+// 其余一律不算 —— 局域网别的机器、Tailscale 对端、Cloudflare 隧道，通通算外网。
+//
+// 隧道为什么不能只看 RemoteAddr：cloudflared 是本机进程，它把公网请求转给 127.0.0.1，
+// RemoteAddr 看着就是「本机」—— 早先就是因此把隧道和本机当成了同一权限，其实用户根本不这么想。
+// 只能靠 Cloudflare 自己加的头来识别（CF-Connecting-IP / CF-Ray）。
+// 这招伪造不了：clientIP() 读的是 RemoteAddr 而不是 X-Forwarded-For，局域网机器带这两个头也没用，
+// 它的 RemoteAddr 本来就不在本机地址里。
+func isLocalRequest(r *http.Request) bool {
+	if r.Header.Get("CF-Connecting-IP") != "" || r.Header.Get("CF-Ray") != "" {
+		return false
+	}
+	ip := net.ParseIP(clientIP(r))
 	if ip == nil {
 		return false
 	}
 	if ip.IsLoopback() {
 		return true
-	}
-	if ip4 := ip.To4(); ip4 != nil {
-		// Tailscale CGNAT 段 100.64.0.0/10
-		if ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
-			return true
-		}
 	}
 	addrs, err := net.InterfaceAddrs()
 	if err == nil {
@@ -855,6 +890,14 @@ func routes() http.Handler {
 	mux.HandleFunc("/api/smb/takeover", guard(handleSMBTakeover))
 	mux.HandleFunc("/api/smb/restore", guard(handleSMBRestore))
 	mux.HandleFunc("/api/qr/token", guard(handleQRToken))
+	// 远程访问（Tailscale 一条线）：状态/加入/断开。见 tunnel_ts.go 顶部说明
+	mux.HandleFunc("/api/tunnel/status", guard(handleTunnelStatus))
+	mux.HandleFunc("/api/tunnel/up", guard(handleTunnelUp))
+	mux.HandleFunc("/api/tunnel/down", guard(handleTunnelDown))
+	// 外网访问（Cloudflare Tunnel）：免注册临时地址 / 自有域名固定地址。见 tunnel_cf.go
+	mux.HandleFunc("/api/tunnel/cf/status", guard(handleCfStatus))
+	mux.HandleFunc("/api/tunnel/cf/start", guard(handleCfStart))
+	mux.HandleFunc("/api/tunnel/cf/stop", guard(handleCfStop))
 	mux.HandleFunc("/api/logs/tail", guard(handleLogTail))
 	mux.HandleFunc("/api/logs/transfers", guard(handleTransferList))
 
@@ -984,10 +1027,10 @@ func serveEmbedded(w http.ResponseWriter, sub fs.FS, name string) {
 
 func adminPageHandler(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
-	if cfg.AdminOnlyLocal && !isLocalOrTailscale(ip) {
+	if cfg.AdminOnlyLocal && !isLocalRequest(r) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusForbidden)
-		fmt.Fprintf(w, "<html><body style=\"font-family:sans-serif;padding:40px\"><h3>管理台禁止从当前地址访问</h3><p>来源 %s。管理台默认只允许本机与 Tailscale 访问，可在 config.json 中把 adminOnlyLocal 改为 false。</p></body></html>", ip)
+		fmt.Fprintf(w, "<html><body style=\"font-family:sans-serif;padding:40px\"><h3>管理台只允许在本机打开</h3><p>你的来源地址是 %s。这个开关打开时，只有在这台机器上（127.0.0.1 或本机自己的 IP）才能打开管理台 —— 局域网里的其它设备、Tailscale、Cloudflare 隧道都进不来。<br>要放开，就在这台机器上打开管理台，到「系统设置 → 访问与安全」关掉那个开关；或者把 config.json 里的 adminOnlyLocal 改成 false。</p></body></html>", ip)
 		return
 	}
 	sub, _ := fs.Sub(webFS, "web")
@@ -1038,9 +1081,8 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 // 它们的地盘是文件站（guardAuth 的那些接口 + 白名单过滤），管理台不开放。
 func guard(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ip := clientIP(r)
-		if cfg.AdminOnlyLocal && !isLocalOrTailscale(ip) {
-			writeJSON(w, 403, "管理接口仅允许本机或 Tailscale 访问", nil)
+		if cfg.AdminOnlyLocal && !isLocalRequest(r) {
+			writeJSON(w, 403, "管理接口只允许在本机访问（当前开关是「只允许本机打开」）", nil)
 			return
 		}
 		if u := webUserOf(r); u != cfg.User {

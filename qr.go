@@ -46,7 +46,7 @@ func handleQRToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, tsIP := tailscaleStatus()
+	_, tsIP := tsActiveIP()
 	writeJSON(w, 0, "ok", map[string]any{
 		"url":         u,
 		"host":        host,

@@ -17,20 +17,46 @@
 </head>
 <body class="fs-body">
 
-<!-- 音乐模式的独立顶栏：音乐页有自己的 tabs / 搜索 / 曲库管理，
-     文件页那排盘符和「最近 / 收藏夹 / 上传」在这里一个都用不上，全藏掉，
-     只留一个回去的入口 —— 点「音乐」就像新开了一个页面，不再是一页里换了个区域。
-     显隐由 body.music-on 控制（style.css），高度进 --fs-head-h 供 mu-head 吸附。 -->
+<!-- 音乐页统一页头：品牌（我的音乐 / 统计）+ 搜索 + 常用操作是第一行；
+     #muTabsHost 是第二行主导航（由 files.js 填歌手 / 专辑 / 全部曲目 / 收藏 / 歌单）。
+     两行同属一个 sticky 顶栏容器，内容从下方直接开始 —— 不再出现
+     「重顶栏 + 单独一层导航 + 内容」三段割裂的头重脚轻感。
+     内层统一收在 1040 列里、左右各 14px，跟下面卡片内容同一条竖线。
+     显隐由 body.music-on 控制（style.css）。 -->
 <header class="mu-topbar" id="muTopbar">
-  <button class="icon-btn" id="muExit" title="返回文件">
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
-  </button>
-  <span class="mu-topbar-t">音乐</span>
-  <!-- 搜索框放最顶上：它对所有 tab 通用（歌手/专辑/曲目/收藏/歌单都能搜），
-       混在 tabs 那行里手机上挤成一团，单独占顶栏剩余宽度最舒服 -->
-  <div class="mu-search mu-topbar-search">
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-    <input type="text" id="muSearch" placeholder="搜歌名 / 歌手 / 专辑">
+  <div class="mu-topbar-in">
+    <div class="mu-brand">
+      <button class="icon-btn mu-exit" id="muExit" title="返回文件">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+      </button>
+      <div class="mu-brand-txt">
+        <div class="mu-kicker"><span class="mu-dot"></span>MY MUSIC LIBRARY</div>
+        <h1 class="mu-title">我的音乐</h1>
+        <div class="mu-stat" id="muHeroStat">正在读取曲库…</div>
+      </div>
+    </div>
+    <div class="mu-topbar-tools">
+      <!-- 搜索对所有 tab 通用（歌手/专辑/曲目/收藏/歌单都能搜），放在页头右侧常驻 -->
+      <div class="mu-search mu-topbar-search">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input type="text" id="muSearch" placeholder="搜歌名 / 歌手 / 专辑">
+      </div>
+      <button class="mu-hero-btn primary" id="muShuffleAll" title="从全库随机挑一首开始播放">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.2v13.6c0 .8.9 1.3 1.6.9l10.4-6.8a1.1 1.1 0 0 0 0-1.8L9.6 4.3C8.9 3.9 8 4.4 8 5.2z"/></svg><span>随机播放</span>
+      </button>
+      <button class="mu-hero-btn" id="muRescan" title="重新扫描曲库" hidden>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg><span>重新扫描</span>
+      </button>
+      <button class="icon-btn mu-mgr" id="muMgr" title="曲库管理" hidden>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h3.7l1.8 2h9.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z"/><path d="M13.4 16.8V9.9l3.1-.7"/><circle cx="11" cy="16.9" r="2.1"/></svg>
+      </button>
+    </div>
+    <div class="mu-topbar-deco" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+  </div>
+  <!-- 主导航收进顶栏当第二行：跟品牌 / 搜索同属一个顶部容器，不再单独占一行夹在中间。
+       参考 Apple Music / Spotify 的分段导航 —— 顶部是一个完整的导航块，内容从下方直接开始。 -->
+  <div class="mu-topbar-nav">
+    <div class="mu-topbar-nav-in" id="muTabsHost"></div>
   </div>
 </header>
 
@@ -95,6 +121,12 @@
 <!-- 音乐页：把库里的曲目按歌手 / 专辑 / 全部 / 歌单组织起来。
      整页由 files.js 渲染（结构跟着数据变），容器只负责占位 -->
 <main class="music-view" id="musicView" hidden></main>
+
+<!-- 音乐长列表的快捷回顶：只在音乐页滚下去后出现，不干扰文件页和播放器。 -->
+<button class="mu-to-top" id="muToTop" type="button" title="回到顶部" aria-label="回到顶部">
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m6 11 6-6 6 6"/></svg>
+  <span>回到顶部</span>
+</button>
 
 <div class="fs-uploadbox" id="uploadBox"></div>
 
@@ -287,7 +319,7 @@
       <div class="mini-vol-pop" id="miniVolPop"><input id="mpMiniVolRange" type="range" min="0" max="100" value="100" aria-label="音量"></div>
     </div>
     <button class="mpmini-btn" id="mpMiniPrev" title="上一首"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M7 5h2.1v14H7zM19 5.8v12.4L9.9 12z"/></svg></button>
-    <button class="mpmini-btn primary" id="mpMiniPlay" title="播放/暂停"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M8.2 5.4v13.2L19 12z"/></svg></button>
+    <button class="mpmini-btn primary" id="mpMiniPlay" title="播放/暂停"><span class="mp-ico mp-ico-play"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M8.2 5.4v13.2L19 12z"/></svg></span><span class="mp-ico mp-ico-pause"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><rect x="6.8" y="5" width="3.8" height="14" rx="1.3"/><rect x="13.4" y="5" width="3.8" height="14" rx="1.3"/></svg></span></button>
     <button class="mpmini-btn" id="mpMiniNext" title="下一首"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M14.9 5H17v14h-2.1zM5 5.8v12.4L14.1 12z"/></svg></button>
   </div>
   <button class="mpmini-btn mpmini-x" id="mpMiniClose" title="关闭播放器"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>

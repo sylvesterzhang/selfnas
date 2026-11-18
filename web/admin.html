@@ -21,6 +21,7 @@
     <nav class="nav">
       <button data-tab="overview" class="active">概览</button>
       <button data-tab="roots">根目录</button>
+      <button data-tab="remote">外网访问</button>
       <button data-tab="musiclib">手机听歌</button>
       <button data-tab="account">账号安全</button>
       <button data-tab="system">系统设置</button>
@@ -140,6 +141,37 @@
       </table>
     </section>
 
+    <!-- 外网访问：三块做成 tab 栏，点哪个看哪个。
+         推荐顺序（2026-11-17 用户定，按国内真实体验）：
+         ① 临时地址 —— 零门槛、CF 亚洲入口快，在外面用手机流量也顺；
+         ② 固定地址 —— 进阶，要自己的域名；
+         ③ Tailscale —— 自己用：直连时最快、地址固定、端到端加密，但国内打洞常失败
+            （失败就绕海外中继，可能很慢），所以不放推荐位。
+         默认停在「临时地址」；上次选哪个，下次进来还在哪个。内容由 admin.js 渲染。 -->
+    <section class="panel" id="panel-remote">
+      <div class="net-tabs" role="tablist">
+        <button class="net-tab on" data-net="quick" role="tab">
+          <span class="net-tab-t">临时地址<span class="net-badge">推荐</span><i class="net-dot" id="dotQuick" title="运行中"></i></span>
+          <small>零门槛 · 点一下就出网址 · 外面也好用</small>
+        </button>
+        <button class="net-tab" data-net="named" role="tab">
+          <span class="net-tab-t">固定地址<span class="net-badge ghost">进阶</span><i class="net-dot" id="dotNamed" title="运行中"></i></span>
+          <small>要自己的域名 · 永不变</small>
+        </button>
+        <button class="net-tab" data-net="ts" role="tab">
+          <span class="net-tab-t">Tailscale<span class="net-badge ghost">自己用</span><i class="net-dot" id="dotTs" title="运行中"></i></span>
+          <small>固定地址 + 加密 · 直连看网络条件</small>
+        </button>
+      </div>
+
+      <div class="net-pane on" id="pane-cf">
+        <div id="cfBox"><p class="hint">正在读取状态…</p></div>
+      </div>
+      <div class="net-pane" id="pane-ts">
+        <div id="tsBox"><p class="hint">正在读取状态…</p></div>
+      </div>
+    </section>
+
     <!-- 曲库目录管理已经搬到文件站「音乐」页（边听边加才顺手，见 files.js 的 openLibMgr）。
          这里只留「手机怎么连」——它天然属于账号/网络设置，跟曲库是两件事。 -->
     <section class="panel" id="panel-musiclib">
@@ -190,9 +222,9 @@
       <table style="margin-bottom:22px">
         <tbody>
           <tr>
-            <td style="width:260px">管理台仅允许本机 / Tailscale 访问</td>
+            <td style="width:260px" id="guardTitle">管理台只允许本机打开</td>
             <td><label class="switch"><input type="checkbox" id="optAdminOnly"><span class="track"></span></label></td>
-            <td class="muted">关闭后，同一局域网内的设备也能打开管理台</td>
+            <td class="muted" id="guardNote">打开：只有在这台机器上（<code>127.0.0.1</code> 或本机自己的 IP）能打开管理台，局域网其它设备、Tailscale、Cloudflare 隧道都进不来；关闭：局域网和外网通道都能打开。⚠️ 打开后你在别的设备上会立刻进不去，要改回来只能到这台机器上操作</td>
           </tr>
         </tbody>
       </table>
@@ -217,6 +249,18 @@
       <div id="autostartCmdBox" hidden style="margin-top:-6px;margin-bottom:16px">
         <div class="hint" id="autostartCmdHint" style="margin-top:0;margin-bottom:8px"></div>
         <div id="autostartCmdList"></div>
+      </div>
+
+      <!-- 外接盘热插拔自动挂载（仅 Linux）。跟开机自启彻底独立：各自装、各自卸。
+           开关只反映系统真实状态；点它不会立刻生效 —— 改状态要 root，程序给不了，
+           所以点开的是「该执行哪条命令」，执行完刷新开关才会变。 -->
+      <div id="mountBox" hidden style="margin-top:-6px;margin-bottom:16px">
+        <div class="section-title" style="margin-top:22px">
+          <span>外接盘自动挂载</span>
+          <label class="switch"><input type="checkbox" id="optMountHelper"><span class="track"></span></label>
+        </div>
+        <div class="hint" id="mountHint" style="margin-top:0;margin-bottom:8px"></div>
+        <div id="mountCmdList"></div>
       </div>
 
       <h2 class="section-title" style="margin-top:24px">文件站外观</h2>

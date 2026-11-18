@@ -22,7 +22,8 @@ import (
 )
 
 const (
-	asUnitName        = "selfnas.service"
+	asUnitBase        = "selfnas" // systemctl 用的名字（不带 .service）
+	asUnitName        = asUnitBase + ".service"
 	asUnitInstallPath = "/etc/systemd/system/" + asUnitName
 )
 
@@ -35,10 +36,18 @@ type autostartInfo struct {
 	Detail     string `json:"detail"`
 	// 下面三个只对 Linux/macOS 有意义：配置文件是我们生成的，
 	// 但「装进系统」这一步要用户自己在终端执行（见文件头注释）。
-	ConfigPath  string `json:"configPath,omitempty"`  // 生成好的 unit 文件路径
-	Command     string `json:"command,omitempty"`     // 安装并启用开机自启（带 --now，即装即启）
+	ConfigPath   string `json:"configPath,omitempty"`   // 生成好的 unit 文件路径
+	Command      string `json:"command,omitempty"`      // 安装并启用开机自启（带 --now，即装即启）
 	CommandStart string `json:"commandStart,omitempty"` // 仅现在启动（不开机自启）
-	CommandOff  string `json:"commandOff,omitempty"`  // 卸载命令
+	CommandOff   string `json:"commandOff,omitempty"`   // 卸载命令
+
+	// 外接盘热插拔自动挂载助手（udev + oneshot 服务，见 mounthelper_linux.go）。
+	// 它跟开机自启是两件事，但装法一样，所以并进同一条命令里；
+	// 已经装过自启的人靠 MountCmd 单独补装。
+	MountHelper bool   `json:"mountHelper"`           // 系统里是否已装好
+	MountDir    string `json:"mountDir,omitempty"`    // 生成好的文件所在目录
+	MountCmd    string `json:"mountCmd,omitempty"`    // 单独安装 / 补装的命令
+	MountOffCmd string `json:"mountOffCmd,omitempty"` // 单独卸载的命令
 }
 
 func autostartGet() autostartInfo {
@@ -58,11 +67,33 @@ func autostartGet() autostartInfo {
 	if p, err := asWriteUnit(exe, dir); err == nil {
 		info.ConfigPath = p
 	}
+	// 自动挂载助手的三个文件同样随时备好
+	info.MountHelper = mhInstalled()
+	if d, err := mhWrite(); err == nil {
+		info.MountDir = d
+		info.MountCmd = joinCmds(append(mhInstallParts(d), mhReload))
+	}
+	info.MountOffCmd = joinCmds(mhRemoveParts())
 	info.Command, info.CommandStart, info.CommandOff = asInstallCommands()
 	if info.Command == "" {
 		info.Detail = "客户端凭据准备好了，但生成配置文件失败（家目录不可写？）"
 	}
 	return info
+}
+
+// joinCmds 把几段命令串成一条（复制一次就够，中间任一步失败立即停）。
+func joinCmds(parts []string) string {
+	out := ""
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		if out != "" {
+			out += " && "
+		}
+		out += p
+	}
+	return out
 }
 
 // autostartSet 在 Linux 上不做任何系统改动：开启 = 重新生成配置文件并返回命令，
@@ -127,21 +158,27 @@ func asServiceUser() string {
 }
 
 // asInstallCommands 给「复制即用」的安装 / 仅启动 / 卸载命令。
+//
+// 只管开机自启这一件事。「外接盘自动挂载」是独立的一块（见 mounthelper_linux.go），
+// 由用户单独决定开不开 —— 两件事装法一样，但谁也不该替谁做决定。
 func asInstallCommands() (install, start, uninstall string) {
 	exe, dir := asSelfPaths()
 	src, err := asWriteUnit(exe, dir)
 	if err != nil {
 		return "", "", ""
 	}
-	install = fmt.Sprintf(
-		"sudo cp '%s' %s && sudo systemctl daemon-reload && sudo systemctl enable --now %s",
-		src, asUnitInstallPath, "selfnas")
-	// 仅现在启动：把 unit 放到位但不 enable，下次开机不会自动拉起
-	start = fmt.Sprintf(
-		"sudo cp '%s' %s && sudo systemctl daemon-reload && sudo systemctl start %s",
-		src, asUnitInstallPath, "selfnas")
-	uninstall = fmt.Sprintf(
-		"sudo systemctl disable --now %s && sudo rm -f %s && sudo systemctl daemon-reload",
-		"selfnas", asUnitInstallPath)
+	base := joinCmds([]string{
+		fmt.Sprintf("sudo cp '%s' %s", src, asUnitInstallPath),
+		"sudo systemctl daemon-reload",
+	})
+
+	install = base + " && sudo systemctl enable --now " + asUnitBase
+	// 仅现在启动：把文件放到位但不 enable，下次开机不会自动拉起
+	start = base + " && sudo systemctl start " + asUnitBase
+	uninstall = joinCmds([]string{
+		"sudo systemctl disable --now " + asUnitBase,
+		fmt.Sprintf("sudo rm -f %s", asUnitInstallPath),
+		"sudo systemctl daemon-reload",
+	})
 	return install, start, uninstall
 }

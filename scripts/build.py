@@ -79,12 +79,28 @@ def ensure_ffbundle(targets):
     subprocess.run([sys.executable, 'scripts/make_ffbundle.py'], check=True)
 
 
+def ensure_cfbundle(targets):
+    """cloudflared 跟 ffmpeg 一样是内置资产：缺了对应平台的 .zst 就编不过去。
+    平台映射同一套（都是这五个）。"""
+    missing = []
+    for goos, goarch in targets:
+        plat = FFBUNDLE_PLATS.get((goos, goarch))
+        if plat and not os.path.exists(os.path.join('assets', 'cloudflared', plat, 'cloudflared.zst')):
+            missing.append(plat)
+    if not missing:
+        return
+    print('缺少内置 cloudflared 资产: %s' % ', '.join(missing))
+    print('开始准备（首次需要下载官方二进制，约 200MB，几分钟）...')
+    subprocess.run([sys.executable, 'scripts/make_cfbundle.py'], check=True)
+
+
 def main():
     v = version()
     only = sys.argv[1].lower() if len(sys.argv) > 1 else ''
     os.makedirs(DIST, exist_ok=True)
     targets = [(g, a) for g, a in TARGETS if not only or only in (g, f'{g}-{a}', a)]
     ensure_ffbundle(targets)
+    ensure_cfbundle(targets)
 
     print(f'版本 {v}')
     for goos, goarch in targets:

@@ -108,6 +108,33 @@ func fstabDirs() map[string]string {
 	return m
 }
 
+// unmountedPartitions 统计「有文件系统、但没挂上」的块设备数。
+//
+// 只用来把话说清楚：扫盘扫不到时不一定是没插盘，很多是「盘在、但没挂上」
+// （Linux 不像 Windows 插盘即挂）。有数字就能指着去装自动挂载助手。
+func unmountedPartitions() int {
+	out, err := exec.Command("lsblk", "-Jno", "NAME,FSTYPE,MOUNTPOINT").Output()
+	if err != nil {
+		return 0
+	}
+	var tree struct {
+		BlockDevices []lsblkNode `json:"blockdevices"`
+	}
+	if json.Unmarshal(out, &tree) != nil {
+		return 0
+	}
+	var nodes []lsblkNode
+	flattenLsblk(tree.BlockDevices, &nodes)
+	n := 0
+	for _, x := range nodes {
+		if x.FSType == "" || x.FSType == "swap" || x.MountPoint != "" {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
 // autoMountHook 返回本次新挂载的目录列表。找不到 lsblk / 非 root 导致全失败时返回 nil。
 func autoMountHook() []string {
 	out, err := exec.Command("lsblk", "-Jno", "NAME,FSTYPE,MOUNTPOINT,LABEL,UUID").Output()

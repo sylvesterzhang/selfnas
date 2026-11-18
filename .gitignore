@@ -94,4 +94,5 @@ $RECYCLE.BIN/
 # 内置 ffmpeg 的压缩资产（三平台约 117MB，不进版本库）
 # 构建前跑 python scripts/make_ffbundle.py 自动下载并生成
 assets/ffmpeg/
+assets/cloudflared/
 .build/

@@ -196,6 +196,17 @@ SelfNAS 就干这几件事：打开网页就能用，扫码就登录，手机上
 - 两者都存服务端 SQLite，跟账号绑定 —— 换手机、换浏览器、清缓存都还在（早期版本存在 localStorage，本质只属于那台设备，已废弃）
 - 表里**只存路径不存元信息**，读的时候现 `stat`：文件被删 / 改名，列表里直接标「已不在」，不留骗人的旧记录
 
+**外网访问（三条路，各管一件事）**
+- 管理台「外网访问」把三条路摆在同一个页面上，先讲清区别再让你点：
+  - **① 自己用 · Tailscale**：点对点直连、跑满上行，SMB / WebDAV / 传大文件全都能走；代价是**要用它的那台手机/电脑也得装 Tailscale 并登同一账号**
+  - **② 发给别人 · 临时地址（推荐）**：零门槛，点一下就出 `https://xxx.trycloudflare.com`，对方浏览器直接打开、什么都不用装；代价是**这台机器或本程序重启后地址会换**（管理台会把新旧地址都列出来，提醒你旧链接已失效）
+  - **③ 发给别人 · 固定地址**：绑自己的域名，地址永久不变；代价是要有域名、且域名 NS 托管在 Cloudflare
+- **这台机器上什么都不用装**：Tailscale 用官方 `tailscale.com/tsnet` 库（BSD-3）、Cloudflare 用官方 cloudflared 二进制（Apache-2.0），都直接编进本程序，不建虚拟网卡、不要管理员/root，五平台一套源码
+- Tailscale 第一次开启只需授权一次：扫那张 `login.tailscale.com` 二维码（或点链接）登录账号 → 节点自动加入，之后开机自动恢复；连上给 `http://100.x.y.z/files`，并显示在线/直连/中继
+- Cloudflare 两种模式都支持「开机自动开启」，重启后自己连上
+- 用户态协议栈只服务我们主动监听的那一个端口，**不会把整台机器的网络拉进 tailnet**
+- 代价：二进制大 16~18MB（Tailscale）+ 12~16MB（cloudflared）；Tailscale 的另一头仍需装客户端 —— 组网两端都得有客户端，省不掉的只有 NAS 这一头
+
 **账号与权限**
 - 管理员 `admin` 永远是全盘
 - 可以再建**受限账号**：每个账号单独配一份「允许访问的文件夹」白名单，每条还能单独标只读
@@ -215,6 +226,7 @@ SelfNAS 就干这几件事：打开网页就能用，扫码就登录，手机上
 - **检查更新**：点一下才去查 GitHub Releases（不偷偷联网），结果存下来，有新版本时「关于」按钮旁挂个红点
 - **一键重新扫描磁盘**：新硬盘、新分区、双系统里另一个系统多出来的盘，点一下自动加进根目录；已有的条目（改名 / 只读 / 禁用）不会被覆盖。**Linux 上还会顺手把「有文件系统但没挂上」的盘挂回去**（先按 fstab，找不到就挂到 `/mnt/<卷标>`）—— 移动硬盘重新插上、或 `nofail` 开机没挂上，不用再手动 `mount`
   - 不用等点按钮：服务启动时会自己检查并挂载一次，10 秒后再补一次（开机时 systemd 常比 USB 盘枚举还早）
+  - 但程序自己是普通用户，**运行中插进来的盘它挂不了**。想要「插上就自动挂、拔了自动摘」，把系统设置里那个「外接盘自动挂载」开关打开（会给你一条命令）—— 由系统的 udev + systemd 完成，程序不需要任何特权，详见[下文](#linux-的外接盘自动挂载热插拔)
 - 配置改动热生效，不用重启 —— 包括根目录的增删改：WebDAV 每次请求都现读配置；SMB 是**就地改共享表 + 切换共享背后的 VFS**（不重启监听、不断连接）：关掉的盘会立刻从共享列表里消失，已经打开它的客户端当场变成 `Access denied`，**把盘再打开之后原来那个位置直接就能用**，不需要在手机上删连接重加
 
 ---
@@ -295,7 +307,7 @@ python scripts/release.py    # 打成 zip / tar.gz + SHA256SUMS，产物在 dist
 
 ```
 ================================================
-  selfnas 0.21.2
+  selfnas 0.21.3
   管理台:  http://127.0.0.1:8080/admin
   局域网:  http://192.168.1.100/admin
   配置:    ./config.json
@@ -315,6 +327,52 @@ python scripts/release.py    # 打成 zip / tar.gz + SHA256SUMS，产物在 dist
      - 不用了就点「关闭」：445 会还给 Windows，自带共享自动恢复。中途取消授权导致没还成的话，卡片上会有「恢复 Windows 自带共享」按钮
    - 🪟 Windows 资源管理器：默认禁止 http 明文 Basic 认证，得先把 `HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters` 下的 `BasicAuthLevel` 改成 `2`、重启 `WebClient` 服务，之后「映射网络驱动器」填 `http://<地址>/dav/`
    - ⚠️ 局域网是 http，Basic 认证的密码是明文传输的，**别把这个端口直接暴露到公网**；要在外网用，前面套一层 HTTPS 反代
+
+### 在外面也能用（三条路，先看这张表再动手）
+
+| 你要干什么 | 用哪个 | 对方要准备什么 | 地址会不会变 |
+|---|---|---|---|
+| **自己在外面用**手机/笔记本看文件、传文件、挂 WebDAV | ① Tailscale | 装 Tailscale App + 登同一账号 | 不变（`100.x.y.z`） |
+| **把东西发给别人看一眼** | ② Cloudflare 临时地址 | 什么都不用 | **会变**（程序重启就换） |
+| **长期固定一个网址发给别人** | ③ Cloudflare 固定地址 | 你有一个托管在 Cloudflare 的域名 | 不变 |
+
+#### ① 自己用：Tailscale
+
+1. 管理台「外网访问」→ ① 卡片点「开启远程访问」（**这台机器不用装任何东西**，客户端已经在程序里）
+2. 第一次会让你授权：手机扫那张码 / 电脑点链接 → 登录你的 Tailscale 账号（没有就注册，免费）→ 这台机器自动加入
+3. 手机上装 Tailscale App，登**同一个账号**
+4. 回管理台复制 `http://100.x.y.z/files`（或直接扫那张二维码）—— 在外面也能打开，管理台一起可用
+
+想无人值守也可以贴一个 authKey（`Settings → Keys` 生成）：填了就直连，不用扫码，authKey 不进 config.json、不进日志。
+
+> 为什么不直接托管官方 `tailscaled`：那要建虚拟网卡（Windows 需管理员、Linux 需 root），而本程序常常跑在计划任务 / systemd 的普通账户下；再加上官方客户端自带服务、向导和自动升级，拉第二份 daemon 只会打架。`tsnet` 是官方给「内嵌进别人的程序」写的库，走用户态 netstack，同样一份代码五个平台都能跑，而且只暴露我们监听的端口。
+>
+> 节点身份存在 `tsnet/tailscaled.state`（config.json 旁边），**别删** —— 删了要重新扫一次码。它刻意不在 `cache/` 里，因为缓存目录有容量清理。
+
+#### ② 发给别人：Cloudflare 临时地址（默认推荐）
+
+管理台「外网访问」→ ②③ 卡片选「临时地址」→ 点「立即生成地址」。
+
+几秒后得到 `https://xxx.trycloudflare.com`，把它发给任何人，对方用浏览器直接打开。**不用注册、不用装任何东西。**
+
+**必须知道的一点**：这个域名是 Cloudflare 随机分配的，**本程序一重启就会换一个新的**（机器重启、升级版本、进程被杀都算）。管理台会把新旧地址一起列出来提醒你「旧链接已经失效」，需要用新的重发一次。只要不重启，地址就一直有效。
+
+#### ③ 发给别人：Cloudflare 固定地址（要域名）
+
+用你自己的域名做入口，比如 `nas.example.com`，地址永久不变。
+
+前提：**域名必须托管在 Cloudflare**（NS 改过去）。一个域名只能有一家权威 DNS，所以**不能只把某个子域搬过去**——CF 免费版不提供子域托管。
+
+1. Cloudflare 控制台 → **Zero Trust → Networks → Tunnels → Create a tunnel**
+2. 建好后点进这条隧道，复制 **Tunnel Token**（以 `eyJ` 开头）
+3. 在 **Public Hostname** 里加一条：子域填 `nas`、域名选你的域名、Service 选 `HTTP`、地址填 `127.0.0.1:80`
+4. 回管理台填域名 + Token，点开启
+
+> 不想动现有主域名的 NS？**另买一个便宜域名专给 NAS 用**（`.xyz` 之类首年几块钱），NS 直接指 Cloudflare，现有站点一个字节都不用改。
+>
+> 这条隧道只转发 HTTP：看网页、下载都行，**不适合传几十 G 的大文件**——要传大文件还是走 Tailscale。
+
+> 为什么不自己搭中转（frp 之类）：那要一台常驻的公网服务器，而这个软件是免费开源的，让作者或者随便哪个使用者去承担别人的流量都不合理。Cloudflare 免费额度把这块成本消掉了，代价就是上面写的「临时地址会变」和「固定地址要域名」。
 
 ### 把歌加进曲库
 
@@ -344,7 +402,7 @@ python scripts/release.py    # 打成 zip / tar.gz + SHA256SUMS，产物在 dist
 | | Windows | Linux | macOS |
 |---|---|---|---|
 | 首次启动枚举磁盘 | ✅ 自动把 C/D/E/F 列成根目录（C 盘默认关闭） | ✅ 家目录 + `/media`、`/mnt` 下已挂载的外部存储（跳过系统挂载点和虚拟文件系统） | ✅ 家目录 + `/Volumes` 下的真实卷 |
-| 外接盘 / 重启后没挂上 | 系统自动挂，不用管 | ✅ 启动与「重新扫描磁盘」都会把有文件系统但未挂载的盘挂回去 | 系统自动挂，不用管 |
+| 外接盘 / 重启后没挂上 | 系统自动挂，不用管 | 装了「外接盘自动挂载」（可选，见下）就插上即挂、拔了自动摘；没装则靠启动与「重新扫描磁盘」兜底 | 系统自动挂，不用管 |
 | 盘符显示 | 显示 `D:` `E:` 帮助认盘 | 无盘符，显示目录名 | 无盘符，显示卷名 |
 | 路径长这样 | `D:\视频` | `/mnt/media` | `/Volumes/移动硬盘` |
 | 开机自启 | 直接写计划任务，一个开关搞定 | 生成 systemd unit +「复制就能跑」的安装命令，自己敲 | 生成 LaunchDaemon plist + 安装命令，自己敲 |
@@ -352,6 +410,29 @@ python scripts/release.py    # 打成 zip / tar.gz + SHA256SUMS，产物在 dist
 | 其余功能（含音乐 / 音效 / 投屏） | 一致 | 一致 | 一致 |
 
 > Linux / macOS 的自启之所以不自动装：那一步要往 `/etc/systemd/system` 或 `/Library/LaunchDaemons` 写文件、要 root，而且动的是系统目录 —— 给一条能看清内容的命令，比自己偷偷往里写更合适。另外 80 和 445 都是特权端口，unit 里用 `CAP_NET_BIND_SERVICE` 单独授权，而不是把服务整个跑成 root。
+
+### Linux 的外接盘自动挂载（热插拔）
+
+Linux 不是插盘即挂，而本程序以普通用户运行（unit 里只给了 `CAP_NET_BIND_SERVICE`），既不能 `mkdir /mnt` 也不能 `mount`。所以插进来的盘会停在「有文件系统、没挂载」的状态，程序侧再怎么扫也扫不到。
+
+装「外接盘自动挂载」之后这个问题就没了：**插入即挂到 `/mnt/<卷标>`，拔出自动摘掉，拔了再插回来也自动恢复**。挂载由系统（root）完成，程序只管读，**不需要任何特权**。
+
+管理台「系统设置」里有**独立的一个开关**（跟「开机自启动」互不影响，各装各卸）：关着的时候点一下，会展开「要做这件事该执行哪条命令」；开着的时候点一下，给的是卸载命令。这块只出现在 Linux 的管理台里，其他平台根本不显示。
+
+> 为什么开关不是点一下就生效：改 `/etc` 要 root，程序是普通用户，替你做不了。所以开关只如实显示系统当前状态，动手那条命令由你复制执行 —— 执行完刷新页面，开关才真的变。这一点跟 Linux 上的「开机自启动」是同一套处理。
+
+三个文件由程序内置（编在二进制里），运行时写到 `~/.config/selfnas/mount/`，可以先 `cat` 看一眼再执行：
+
+| 文件 | 作用 |
+|---|---|
+| `/usr/local/bin/selfnas-mount.sh` | 真正干活：`blkid` 认格式和卷标 → 挂到 `/mnt/<卷标>`，带 `uid/gid/umask` 让普通用户能读写；只碰 exfat/vfat/ntfs 这类外接盘格式，绝不碰 ext4/xfs |
+| `/etc/systemd/system/selfnas-mount@.service` | 以 root 执行上面那步。`BindsTo=dev-%i.device`：设备一消失就停，`ExecStop` 把挂载摘掉 —— 不摘的话残影会挡着下次插盘 |
+| `/etc/udev/rules.d/99-selfnas-mount.rules` | 插盘时触发服务。开机时 udev 会对已有设备补发 add 事件，所以**这一个规则同时覆盖开机和热插拔**，不需要再写 fstab |
+
+两个坑记在这儿（都踩过）：
+
+- **udev 里不能直接 `mount`**。`systemd-udevd` 带 `PrivateMounts=yes`，它做的挂载留在自己的私有命名空间里，外面根本看不见 —— 现象是命令返回成功、`/proc/mounts` 里什么都没有。所以 udev 只负责点火，动作交给 systemd 服务。
+- **`BindsTo=` 里必须写 `%i`，不能写 `%I`**。systemd 在依赖指令里不展开 `%I`，整条依赖会被当成非法单元名**静默丢弃**（`systemctl show` 里 `BindsTo` 是空的），表现为拔盘时不会自动卸载。而 `ExecStart` 里恰恰相反，要的是 `%I`（未转义的设备名）。
 
 ---
 
@@ -398,7 +479,9 @@ python scripts/release.py    # 打成 zip / tar.gz + SHA256SUMS，产物在 dist
 }
 ```
 
-> `adminOnlyLocal` 默认是 `false`。理由是 NAS 场景基本都是无头机，管理台要从另一台电脑打开；真机上换了 IP 还得远程改配置，很难受。要收紧就在管理台「访问与安全」里打开 —— 那种模式下只放行本机和 Tailscale 网段。
+> `adminOnlyLocal` 默认是 `false`。理由是 NAS 场景基本都是无头机，管理台要从另一台电脑打开；真机上换了 IP 还得远程改配置，很难受。要收紧就在管理台「访问与安全」里打开 —— **打开后只有「本机」能进**：`127.0.0.1`，或用本机自己的 IP 访问自己。局域网里的其它设备、Tailscale、Cloudflare 隧道统统挡在外面（隧道虽是 cloudflared 从本机转发的，但带着 `CF-Connecting-IP` / `CF-Ray` 头，一并识别成外网）。文件站 `/files` 不受这个开关影响，手机在局域网照样能看文件。
+>
+> ⚠️ 打开它的那一刻，你如果正从另一台设备操作，保存后会立刻被挡在门外，只能到那台机器上（或 SSH 转发 `ssh -L 8080:127.0.0.1:8080`）再关掉。管理台在保存前会弹一次确认。
 
 > ⚠️ **不要手写 `config.json` 再启动。** 一份只写了 `port` 的极简配置会让「首次启动 → 建管理员账号」那条路被跳过，之后所有登录都 401，看起来像密码错。要改就让它自己生成，再在管理台里改。
 
@@ -468,6 +551,7 @@ selfnas/
 ├── autostart_unit.go systemd unit 与 launchd plist 的文本模板
 ├── disk_windows.go   枚举盘符
 ├── disk_linux.go     枚举家目录 + /media、/mnt 下的已挂载存储；自动挂载未挂载的数据盘
+├── mounthelper_linux.go  外接盘热插拔自动挂载：内嵌脚本 + systemd 模板 + udev 规则，按需写出来并给安装命令
 ├── disk_darwin.go    枚举家目录 + /Volumes 下的真实卷
 ├── disk_mountinfo.go 解析 /proc/self/mountinfo
 ├── ffbundle.go       内置 ffmpeg：go:embed 压缩包，首次用到时释放到 cache/ffbundle-<平台>/
@@ -504,6 +588,14 @@ selfnas/
 | GET | `/api/state` | 全量状态：版本、根目录、主题、SMB、Tailscale、缓存占用 |
 | POST | `/api/settings` | 保存设置（字段都是指针，只改传了的那些） |
 | GET | `/api/qr/token` | 管理台的固定二维码（内容就是永远不变的访问地址） |
+| GET | `/api/tunnel/status` | Tailscale 内嵌节点状态：未开启/接入中/等授权/待批准/运行中、100.x 地址 + 二维码 + 授权二维码 |
+| GET | `/api/tunnel/cf/status` | Cloudflare 隧道状态：quick/named、地址 + 二维码、**地址是否变了（prevUrl/changed）**、是否内置 cloudflared |
+| POST | `/api/tunnel/cf/start` | 开启：`{mode:"quick"}` 免注册；`{mode:"named",host,token}` 固定地址；`auto` 控制开机自启 |
+| POST | `/api/tunnel/cf/stop` | 关闭隧道 |
+| POST | `/api/tunnel/up` | 开启：`{hostname, authKey?}`；authKey 留空则给出授权链接扫码登录 |
+| POST | `/api/tunnel/down` | 断开（保留节点身份，下次开启免授权） |
+| POST | `/api/tunnel/up` | 用 authKey 把本机加入 tailnet（`tailscale up`，key 走环境变量） |
+| POST | `/api/tunnel/down` | 断开当前连接（不注销设备） |
 | GET | `/api/fs/roots` | 根目录列表（含盘符） |
 | GET | `/api/fs/list` | 列目录 `?root=&path=` |
 | POST | `/api/fs/upload` | 分片上传（带区间记录，可续传） |
@@ -659,9 +751,9 @@ cp selfnas.db selfnas.db-wal selfnas.db-shm config.json /somewhere/
 
 ## 状态
 
-个人项目，自用为主。已实现：文件管理、文本与 Markdown 预览、视频播放（换封装 / HEVC 标签修复 / iPhone HLS / 进度记忆）、播放器直链、DLNA 投屏（含手动填 IP）、WebDAV 挂载、SMB 共享、受限账号与文件夹白名单、扫码登录、最近 / 收藏 / 刚点开、七套皮肤、分享海报、版本检查、三平台开机自启、五平台内置 ffmpeg、Linux 启动自动挂载数据盘、缩略图、PWA、管理台；以及音乐这一整块 —— 曲库扫描、播放页（黑胶 / 歌词 / 歌单 / 收藏 / 迷你条 / 队列）、后端 EQ 五预设与音量一致、Hi-Res / 无损标记、Subsonic 兼容层。
+个人项目，自用为主。已实现：文件管理、文本与 Markdown 预览、视频播放（换封装 / HEVC 标签修复 / iPhone HLS / 进度记忆）、播放器直链、DLNA 投屏（含手动填 IP）、WebDAV 挂载、SMB 共享、外网访问三条路（Tailscale 客户端内置扫码授权即用 / Cloudflare 临时地址一键生成 / Cloudflare + 自有域名固定地址）、受限账号与文件夹白名单、扫码登录、最近 / 收藏 / 刚点开、七套皮肤、分享海报、版本检查、三平台开机自启、五平台内置 ffmpeg、Linux 启动自动挂载数据盘、缩略图、PWA、管理台；以及音乐这一整块 —— 曲库扫描、播放页（黑胶 / 歌词 / 歌单 / 收藏 / 迷你条 / 队列）、后端 EQ 五预设与音量一致、Hi-Res / 无损标记、Subsonic 兼容层。
 
-计划中：Tailscale 一键接入（现在只能识别，不能配置）、回收站、转码并发上限、缓存清理入口、Subsonic 的收藏与播放上报（`star` / `scrobble`）。
+计划中：回收站、转码并发上限、缓存清理入口、Subsonic 的收藏与播放上报（`star` / `scrobble`）。公网中转不用自建服务器（Cloudflare 免费额度已覆盖，见「在外面也能用」一节）。
 
 Issue / PR 欢迎，但不保证响应速度。
 
@@ -695,4 +787,34 @@ GPL v3）。FFmpeg 版权归 [FFmpeg 项目](https://ffmpeg.org/) 所有，源�
 如果你自己装了更新版本的 ffmpeg，想用它的话，在 `config.json` 里把 `ffmpeg` 指到它的路径 ——
 这一项优先级最高。没有指定时用内置那份：版本固定、行为可预期，不会因为发行版仓库里
 装的是 4.x 老版本而出现「参数不认」的问题。系统 PATH 里那份只在没有内置包的平台（如 FreeBSD）才兜底生效。
+
+### 内置的 Tailscale 客户端
+
+「远程访问」用的不是外挂的 `tailscaled`，而是把 Tailscale 的官方 Go 库 `tailscale.com/tsnet`
+**编译进了本程序**（`go.mod` 里能看到这个依赖）。它和官方客户端是同一份源码，按
+[BSD 3-Clause](https://github.com/tailscale/tailscale/blob/main/LICENSE) 许可分发，
+版权归 Tailscale Inc. 及其贡献者所有。
+
+用它的理由很实际：托管官方 `tailscaled` 要建虚拟网卡（Windows 需管理员、Linux 需 root），
+还要再维护一份状态目录和 IPC；`tsnet` 走用户态 netstack，不需要任何特权，
+而且同一份代码在五个平台行为一致。本程序只在自己监听的端口上收流量，
+不会把整台机器接进 tailnet，也不会和用户自己装的 Tailscale 客户端抢配置（身份存在各自的目录里）。
+
+再往里一层，它依赖 [wireguard-go](https://git.zx2c4.com/wireguard-go/) 和
+[gvisor 的用户态网络栈](https://gvisor.dev/)，两者分别是 MIT 与 Apache-2.0。
+这也是二进制比不带远程访问时大 16~18MB 的原因。
+
+### 内置的 cloudflared
+
+「外网访问」里的 Cloudflare 隧道用的是官方 **cloudflared** 二进制，按
+[Apache-2.0](https://github.com/cloudflare/cloudflared/blob/master/LICENSE) 许可分发，
+版权归 Cloudflare, Inc. 所有。打包时下载官方发布版、zstd 压缩后 `go:embed` 进本程序，
+第一次用到才释放到 `cache/cloudflared-<平台>/`（五个平台各一份，单份 16~20MB）。
+
+**没有直接 import 它的 Go 包**：cloudflared 的内部依赖锁定得很死，拉进任何工程都会撞版本
+（实测报 `undefined: altsrc.ApplyInputSource`），官方也从没打算让别人这样做。而它的 CLI
+非常稳定 —— 临时域名就打在 stderr 里，抓一行正则即可。所以选了「嵌官方二进制」这条路。
+
+源码位置：`cfbundle.go`（释放逻辑）+ `cfbundle_<平台>.go`（各自 `go:embed`）+
+`scripts/make_cfbundle.py`（下载压缩，资产不进版本库）。版本固定在脚本顶部的 `TAG`。
 

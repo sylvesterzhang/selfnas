@@ -52,3 +52,6 @@ func volumeSpaceOS(path string) (uint64, uint64) {
 
 // autoMountHook macOS 插盘即自动挂载，无需处理。
 func autoMountHook() []string { return nil }
+
+// unmountedPartitions 插盘即挂的系统用不着这条提示。
+func unmountedPartitions() int { return 0 }

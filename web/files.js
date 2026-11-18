@@ -104,8 +104,61 @@ async function loadRoots() {
 // 而用户本来就是靠 D: E: F: 区分盘的（重装系统后盘符还会变）
 function rootTag(name, drive) { return drive ? name + ' ' + drive : name; }
 
+function initRootsBarScroll(bar) {
+  if (!bar || bar.dataset.scrollBound === '1') return;
+  bar.dataset.scrollBound = '1';
+
+  // 普通鼠标滚轮通常只发垂直 delta；指针在根目录栏上时将它转成横向滚动。
+  bar.addEventListener('wheel', (e) => {
+    if (bar.scrollWidth <= bar.clientWidth) return;
+    if (Math.abs(e.deltaY) >= Math.abs(e.deltaX)) {
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? bar.clientWidth : 1;
+      bar.scrollLeft += e.deltaY * unit;
+      e.preventDefault();
+    }
+  }, { passive: false });
+
+  // 桌面端按住拖动，触屏仍由原生 pan-x 处理。
+  let startX = 0;
+  let startScroll = 0;
+  let dragging = false;
+  bar.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'touch' || e.button !== 0 || bar.scrollWidth <= bar.clientWidth) return;
+    startX = e.clientX;
+    startScroll = bar.scrollLeft;
+    dragging = false;
+  });
+  bar.addEventListener('pointermove', (e) => {
+    if (!(e.buttons & 1) || e.pointerType === 'touch' || bar.scrollWidth <= bar.clientWidth) return;
+    const dx = e.clientX - startX;
+    if (!dragging && Math.abs(dx) < 5) return;
+    dragging = true;
+    bar.classList.add('drag-scrolling');
+    bar.scrollLeft = startScroll - dx;
+    e.preventDefault();
+  });
+  const endDrag = () => {
+    if (!dragging) return;
+    bar.classList.remove('drag-scrolling');
+    // 拖动结束后的 click 会落到某个 chip 上，吞掉这一次，避免误切盘。
+    bar.dataset.suppressClick = '1';
+    setTimeout(() => { delete bar.dataset.suppressClick; }, 0);
+    dragging = false;
+  };
+  bar.addEventListener('pointerup', endDrag);
+  bar.addEventListener('pointercancel', endDrag);
+  bar.addEventListener('click', (e) => {
+    if (bar.dataset.suppressClick === '1') {
+      e.preventDefault();
+      e.stopPropagation();
+      delete bar.dataset.suppressClick;
+    }
+  }, true);
+}
+
 function renderRoots() {
   const bar = $('rootsBar');
+  initRootsBarScroll(bar);
   bar.innerHTML = '';
   S.roots.forEach((r) => {
     const b = document.createElement('button');
@@ -793,6 +846,51 @@ async function openInPlayer() {
   toast(copied ? '直链已复制，粘到播放器的「打开网络串流」' : '请手动复制链接');
 }
 
+// ---------- 播放器进出场：淡入淡出 ----------
+// 退场用「克隆一份当残影」而不是给真身加过渡再 setTimeout 隐藏：点歌 / 最小化后
+// 真身马上要被 mountAudio 写新内容或立刻显示迷你条，若等动画结束再清 DOM 会互相踩。
+// 残影是静态快照（媒体节点摘掉免得它继续加载），200ms 淡出后自己移除。
+const UI_FADE_MS = 200;
+function uiReduceMotion() { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; }
+function uiFadeIn(el) {
+  if (!el || uiReduceMotion()) return;
+  el.classList.add('is-entering');
+  void el.offsetWidth;                        // 强制回流，让 transition 有起点
+  requestAnimationFrame(() => el.classList.remove('is-entering'));
+}
+function uiFadeGhost(el, cls) {
+  if (!el || uiReduceMotion()) return;
+  const g = el.cloneNode(true);
+  g.removeAttribute('id');
+  g.querySelectorAll('video,audio').forEach((m) => m.remove());
+  g.classList.add(cls);
+  document.body.appendChild(g);
+  requestAnimationFrame(() => g.classList.add('fade'));
+  setTimeout(() => g.remove(), UI_FADE_MS + 80);
+}
+function viewerOn() {
+  const v = $('viewer');
+  if (!v || v.classList.contains('on')) return;
+  v.classList.add('on');
+  uiFadeIn(v);
+}
+function viewerOff() {
+  const v = $('viewer');
+  if (!v || !v.classList.contains('on')) return;
+  uiFadeGhost(v, 'viewer-ghost');
+  v.classList.remove('on', 'is-entering');
+}
+function miniOn() {
+  document.body.classList.add('mini-on');
+  uiFadeIn(document.querySelector('.mpmini'));
+}
+function miniOff() {
+  if (document.body.classList.contains('mini-on')) uiFadeGhost(document.querySelector('.mpmini'), 'mpmini-ghost');
+  document.body.classList.remove('mini-on');
+  const m = document.querySelector('.mpmini');
+  if (m) m.classList.remove('is-entering');
+}
+
 function openViewer(e) {
   viewerEntry = e;
   noteRecent(e);            // 打开就算"看过"，记一笔（服务端落库，跟账号绑定）
@@ -812,6 +910,8 @@ function openViewer(e) {
   // 万一有哪条路径加上去没退干净，新打开的预览就会「顶栏按钮消失」，这里一次性清掉。
   $('viewer').classList.remove('fs');
   $('viewer').classList.add('on');
+  // 音频分支紧接着就收进迷你条，别做全屏淡入（否则会闪一下黑场）
+  if (e.kind !== 'audio') uiFadeIn($('viewer'));
   $('viewer').classList.toggle('is-audio', e.kind === 'audio');   // 图片/视频要把顶栏标题还回来
   if (e.kind === 'image') {
     body.innerHTML = '<img src="' + dl + '&inline=1" alt="">';
@@ -819,9 +919,9 @@ function openViewer(e) {
     // 点歌不打断浏览：音频没有「看」的内容，收进底部迷你条直接唱，
     // 全屏（黑胶/歌词）等用户点迷你条再进
     mountAudio(e);
-    $('viewer').classList.remove('on');
+    $('viewer').classList.remove('on', 'is-entering');
     MP.mini = true;
-    document.body.classList.add('mini-on');
+    miniOn();
     mpMiniSync();
     mpSessionSave();   // 同 playFromMusic：mini 标志是在 mountAudio 之后才定的，补存最终状态
   } else if (e.kind === 'pdf') {
@@ -854,7 +954,7 @@ function openViewer(e) {
 // 两件事分开，切随机时列表不会跟着乱跳。
 const MP = {
   on: false, root: '', dir: '', list: [], i: -1, el: null, seeking: false,
-  shuffle: false, seq: [], pos: 0, played: {},
+  shuffle: false, seq: [], pos: 0,
   // 歌词：lyric 是解析好的 [{t, s}]，t<0 表示整份没时间轴；lyIdx 是当前高亮行
   lyric: [], lyIdx: -1, lyricTried: false, lyricToken: 0, qOpen: false,
   // 循环模式：0 顺序 / 1 列表循环（走完绕回开头）/ 2 单曲循环（这首放完重放这首）。
@@ -873,12 +973,18 @@ const MP = {
   // 但系统往往**先** pause 才派发 hidden，快照读到的是「已暂停」→ 永远补不回来，
   // 这就是「最小化后就不播了」的根因。
   userPaused: true,
-  // trackSeq：每换一首歌 +1。mpRestore / 刷新恢复都是异步的，靠它防止把上一首的
-  // 进度贴到下一首。guardSeq：主动暂停 / 关播放器后作废还没跑的补播定时器。
+  // trackSeq：每换一首歌 +1。刷新恢复 / 卡顿重连都是异步的，靠它防止把上一首的
+  // 位置贴到下一首。guardSeq：主动暂停 / 关播放器后作废还没跑的补播定时器。
   trackSeq: 0, guardSeq: 0,
   // 卡顿自愈用：recoverTo > 0 表示这次 loadedmetadata 是「重连」触发的，
   // 要跳回这个位置而不是从头播。剩下两个只是给 watchdog 做判断用的临时值。
+  restoring: false,    // 刷新恢复中：坑位里的旧 t 不许被「还没 metadata 的 0」盖掉
   recoverTo: 0, lastCt: 0, stillSince: 0, lastRetry: 0,
+  // ⭐ 「元素自称在播」不等于「真在出声」。iOS 被别的 App 抢走音频会话时，
+  // 常常既不派 pause、也不把元素置成 paused —— 只是把声音掐掉，currentTime 从此不动。
+  // aliveAt = currentTime 最后一次真的往前走的时间；playAt = 最后一次真正起播的时间
+  // （刚起播那一两秒 currentTime 还没动，别急着判死）。判「真在播」只看这两个。
+  aliveAt: 0, playAt: 0, aliveCt: -1,
 };
 
 // 播放器图标：走 SVG 不用字符 —— ⏮ / ⏭ 这种符号在不同系统上字形差很多，
@@ -901,6 +1007,14 @@ const MP_ICON = {
   loud: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></svg>',
   note: '<svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V6.6l10-2v10.8"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="15.4" r="2.5"/></svg>',
 };
+
+// 播放 / 暂停两个图标同时放进按钮，切状态只切 .playing 类，由 CSS 做交叉淡化。
+// 旧做法是每次 mpPaintBtn 都 innerHTML 硬替换：timeupdate 一秒调好几次，图标「啪」一下跳，
+// 而且频繁重设 DOM 会把正在跑的过渡打断。叠放后两套 svg 常驻，状态没变时连 transition 都不触发。
+function mpIconPlayPause() {
+  return '<span class="mp-ico mp-ico-play">' + MP_ICON.play + '</span>' +
+         '<span class="mp-ico mp-ico-pause">' + MP_ICON.pause + '</span>';
+}
 
 // ---------- 音效预设（固定参数，不给用户调） ----------
 // 五个预设共用同一条滤波链，切换只改各段的固定增益。刻意不做滑条、不做强度：
@@ -1001,6 +1115,20 @@ function mpLoudPaint() {
   if (cur) cur.textContent = MP.loud ? '开' : '关';
 }
 
+// ⭐ 「真在播」= 元素没暂停 **且** 进度真的在走。
+//
+// 不能只看 el.paused：iOS 被别的 App（抖音、来电、语音消息）抢走音频会话时，
+// 很多情况下元素仍自称「在播」——只是声音没了、currentTime 从此冻住、pause 事件也不派。
+// 界面若还照 el.paused 画，用户看到的就是「明明在播却没声」，而播放键第一下还会
+// 走成「暂停」（本来就没声，点了等于没反应）——这就是「回来要点两次播放键」的根因。
+// 起播后两秒内 currentTime 可能还没动，用 playAt 给一段宽限。
+const MP_ALIVE_MS = 2000;
+function mpAlive() {
+  const a = MP.el;
+  if (!a || !a.src || a.paused || a.ended) return false;
+  return Date.now() - Math.max(MP.aliveAt, MP.playAt) < MP_ALIVE_MS;
+}
+
 // 刷新恢复：预设从本地读回来（见 mpGlobalInit），但 EQ 完全在后端生效，前端无 Web Audio，
 // 所以刷新后没有任何「建链 / 手势」顾虑 —— 预设只是下次请求 src 时带上 ?eq=。
 // 用户主动按播放 / 暂停：唯一允许改 MP.userPaused 的地方。
@@ -1009,6 +1137,11 @@ function mpUserPlay() {
   if (!MP.el) return;
   MP.userPaused = false;
   MP.guardSeq++;
+  // 幽灵播放：对自称在播却没声的元素再 play() 是空转（promise 立刻 resolve，
+  // 声音照样没有）。只有换地址从断点重新拉流才真能接回来 —— 点一下就该响。
+  if (!MP.el.paused && !mpAlive()) { mpReconnect(true); return; }
+  MP.playAt = Date.now();
+  MP.aliveAt = MP.playAt;
   const p = MP.el.play();
   if (p && p.catch) p.catch(() => {});
 }
@@ -1021,11 +1154,34 @@ function mpUserPause() {
 
 // 只按「用户意图」补播。系统把音频 pause 掉时不改 userPaused，所以能接回来；
 // 用户自己按过暂停的（userPaused=true）一次都不会碰。
-function mpResume() {
+// withGesture=true（真实点击 / 按键）才允许处理「幽灵播放」：重连要调 play()，
+// 没有手势 iOS 只会拒掉，白搭；后台更是连试都别试。
+function mpResume(withGesture) {
   if (!MP.on || MP.userPaused || !MP.el || !MP.el.getAttribute('src')) return;
-  if (!MP.el.paused) return;
+  if (!MP.el.paused) {
+    if (withGesture && !document.hidden && !mpAlive()) mpReconnect(true);
+    return;
+  }
+  MP.playAt = Date.now();
+  MP.aliveAt = MP.playAt;
   const p = MP.el.play();
   if (p && p.catch) p.catch(() => {});   // 被 autoplay 策略拒了就等下一次手势 / 前台事件
+}
+
+// 回前台先对一次「真相」，再决定要不要补播 —— 只在事件回调里画图标会漏掉
+// 「系统把声音掐了却不派 pause」的那种情况，界面就一直停在播放态。
+// 注意这里只重画 / 改系统面板状态，不主动重连：没有手势的 play() iOS 会拒，
+// 真正的接续交给随后那一次点击（arm）或播放键。
+function mpTruthSync() {
+  if (!MP.on || !MP.el) return false;
+  // ⚠️ 后台期间 JS 是被冻结的，timeupdate 不跑 ⇒ aliveAt 天然是旧的。
+  // 不能拿它判死「在后台一直好好播着」的那首歌（锁屏听歌回来就被打成暂停，更糟）。
+  // 所以回前台先给一段宽限，真假交给 watchdog 用「进度到底走没走」重新裁决。
+  if (!MP.el.paused) MP.playAt = Date.now();
+  const alive = mpAlive();
+  mpPaintBtn();
+  if (MP.el.getAttribute('src')) mpMsState(alive ? 'playing' : 'paused');
+  return alive;
 }
 
 // 收起 / 展开 / 回前台后盯几眼：iOS 常常在 UI 重排**完成之后**才异步把 audio 停掉，
@@ -1034,6 +1190,7 @@ function mpGuardPlay() {
   const g = ++MP.guardSeq;
   [0, 120, 400, 900].forEach((ms) => setTimeout(() => {
     if (g !== MP.guardSeq) return;
+    mpTruthSync();
     mpResume();
   }, ms));
 }
@@ -1055,11 +1212,11 @@ function mpGlobalInit() {
     // 调 mpUserPause()，把播放键按成了暂停键（刷新后状态不稳时最容易撞上）。
     const t = ev && ev.target;
     if (t && t.closest && t.closest('#mpPlay, #mpMiniPlay')) return;
-    mpResume();
+    mpResume(true);   // pointerdown 是正经手势：幽灵播放也能在这一下接回来
   };
   // 手机把浏览器切后台 / 锁屏 / 最小化 App 时，Safari 会直接把 <audio> pause 掉，
   // 回到前台不会自己续。只在「用户没主动暂停」时补播，别把人按了暂停的歌又开唱。
-  const back = () => { arm(); mpGuardPlay(); };
+  const back = () => { mpTruthSync(); mpGuardPlay(); };
   document.addEventListener('pointerdown', arm, { capture: true });
   document.addEventListener('keydown', arm);
   document.addEventListener('visibilitychange', () => {
@@ -1109,11 +1266,11 @@ function mpBindAudioEl(el) {
     mpSave(true);
   });
   a.addEventListener('loadedmetadata', () => {
-    const seq = MP.trackSeq;
-    mpRestore(seq);
-    // 切歌一律从头：不给续播时，把浏览器复用同一元素、从上一个 src 带过来的位置清掉。
-    // 刷新恢复的快照由 mpSessionRestore 那个 once 监听在之后设置，顺序上不会被覆盖。
-    if (!MP.allowRestore && MP.on && MP.el && MP.el.currentTime > 0) {
+    // ⭐ 全局只有一个进度坑位（localStorage 的 mp_session），只服务「刷新 / 重开浏览器」。
+    // 点歌 / 切歌都不读历史进度，一律从头 —— 浏览器复用同一元素带来的旧 currentTime
+    // 在这里统一清零。刷新恢复的位置由 mpSessionRestore 的 once 监听写回（它注册在本
+    // 监听之后，执行顺序在后，不会被这里盖掉）；卡顿重连的 recoverTo 在下面处理。
+    if (MP.on && MP.el && MP.el.currentTime > 0) {
       try { MP.el.currentTime = 0; } catch (err) {}
     }
     mpSeekSync();
@@ -1131,6 +1288,9 @@ function mpBindAudioEl(el) {
     // 关掉播放器的瞬间元素还会甩出最后一两个 timeupdate，那时 MP.el 已置空
     if (!MP.el) return;
     const t = MP.el.currentTime;
+    // ⭐ 只有「位置真的往前走了」才算活着。打断之后偶尔仍会甩出 timeupdate，
+    // 若不看位置直接记时间，就会把已经死掉的播放误判成正常。
+    if (!a.paused && Math.abs(t - MP.aliveCt) > 0.05) { MP.aliveCt = t; MP.aliveAt = Date.now(); }
     mpTick(); mpSeekSync(); mpSyncLyric(t);
     mpMsPosition(false);               // 约 1 秒纠一次系统进度条
   });
@@ -1140,8 +1300,15 @@ function mpBindAudioEl(el) {
   a.addEventListener('durationchange', () => mpMsPosition(true));
   // 开唱记一笔（暂停标记翻回来）
   a.addEventListener('play', () => {
-    MP.startingPlay = false; mpPaintBtn(); mpSessionSave();
+    MP.startingPlay = false;
+    MP.playAt = Date.now(); MP.aliveAt = MP.playAt; MP.aliveCt = a.currentTime;
+    mpPaintBtn(); mpSessionSave();
     mpMsState('playing'); mpMsPosition(true);
+  });
+  // 真正开始出声音帧：这是「活着」最硬的信号（被系统静音的幽灵播放不会有这个事件）
+  a.addEventListener('playing', () => {
+    MP.playAt = Date.now(); MP.aliveAt = MP.playAt; MP.aliveCt = a.currentTime;
+    mpPaintBtn();
   });
   a.addEventListener('pause', () => {
     MP.startingPlay = false; mpPaintBtn(); mpSave(false); mpSessionSave();
@@ -1157,43 +1324,61 @@ function mpBindAudioEl(el) {
 // 浏览器自己不再要数据了），所以客户端必须自己发现并重连。
 // 判据故意用「currentTime 连续 N 秒一点没动」而不是 readyState：后者在缓冲中
 // 和真卡死时是一样的值，分不出来。
-function mpReconnect() {
+function mpReconnect(manual) {
   const a = MP.el;
   if (!a || !MP.on) return;
   let base = a.src || '';
   if (!base) return;
+  // pointerdown + click 可能连着来，别在 1.5 秒内重连两次
+  const now = Date.now();
+  if (now - MP.lastRetry < 1500) return;
+  MP.lastRetry = now;
   const at = a.currentTime || 0;
   // 去掉上一次重连加的防缓存参数，避免每重连一次 URL 就长一截
   base = base.replace(/[?&]_r=\d+/g, '').replace(/[?&]$/, '');
   MP.recoverTo = at;
-  a.src = base + (base.indexOf('?') >= 0 ? '&' : '?') + '_r=' + Date.now();
+  // 换源就是「重新出生」：位置重置由 loadedmetadata 里的 recoverTo 负责，
+  // 这里先把活着的时间戳压回去，避免旧的 aliveAt 让 mpAlive() 继续撒谎。
+  MP.aliveAt = 0; MP.aliveCt = -1;
+  a.src = base + (base.indexOf('?') >= 0 ? '&' : '?') + '_r=' + now;
   try { a.load(); } catch (e) {}
   // 后台（锁屏 / 切标签）没有手势，play() 会被 iOS 直接拒 —— 那就不折腾，
   // 回到前台由 mpGlobalInit 的 arm() 统一补播。
-  a.play().catch(() => {});
-  clog('播放卡住（' + at.toFixed(1) + 's），已自动重连');
-  toast('播放中断，正在自动重连');
+  const p = a.play();
+  if (p && p.catch) p.catch(() => { mpPaintBtn(); });   // 起不来就把按钮画回「播放」，别继续骗人
+  // 用户自己点的那一下不报「中断」，别让人以为又出毛病了
+  clog((manual ? '按播放键重连' : '播放卡住') + '（' + at.toFixed(1) + 's）');
+  if (!manual) toast('播放中断，正在自动重连');
 }
 
+// 看门狗：每秒看一次「元素自称在播，但进度到底有没有走」。
+//
+// 两种「卡」必须分开处理：
+//  · 断流：readyState 上不去（<3），等 8 秒再重连，别对慢网络乱开炮；
+//  · ⭐ 幽灵播放：缓冲是满的（readyState 4）、元素还自称在播，但声音被 iOS 掐了。
+//    它永远不会自己好，2 秒就够判 —— 旧代码在这里被 `readyState>=3` 挡掉了，
+//    所以「明明没声却一直显示在播」从来没人发现。
 function mpStallWatch() {
   setInterval(() => {
     const a = MP.el;
-    if (!MP.on || !a || a.paused || a.ended || !a.src || document.hidden) {
+    if (!MP.on || !a || a.paused || a.ended || !a.src) {
       MP.stillSince = 0; MP.lastCt = -1; return;
     }
+    // 后台（锁屏 / 切 App）没手势，重连也起不来；拖动进度条时位置本来就不动
+    if (document.hidden || MP.seeking) { MP.stillSince = 0; MP.lastCt = -1; return; }
     const now = Date.now();
     if (Math.abs(a.currentTime - MP.lastCt) > 0.25) {
       // 进度在走 = 正常播放，把计时器清零
       MP.lastCt = a.currentTime; MP.stillSince = 0; return;
     }
     if (!MP.stillSince) { MP.stillSince = now; return; }
-    // 8 秒不动才算卡死；同一首最多 30 秒重连一次，别把真慢的网络连成风暴
-    if (now - MP.stillSince < 8000 || now - MP.lastRetry < 30000) return;
-    // readyState 够高说明是「播到一半用户拖了下进度」，不是断流
-    if (a.readyState >= 3) { MP.stillSince = 0; return; }
-    MP.lastRetry = now; MP.stillSince = 0;
-    mpReconnect();
-  }, 2000);
+    const ghost = a.readyState >= 3;   // 缓冲满却不动 = 幽灵播放，不是断流
+    if (now - MP.stillSince < (ghost ? MP_ALIVE_MS : 8000)) return;
+    // 同一首最多 30 秒自动重连一次，别把真慢的网络连成风暴
+    if (now - MP.lastRetry < 30000) return;
+    MP.stillSince = 0;
+    mpReconnect(false);
+  }, 1000);
 }
 mpBindAudioEl();
 
@@ -1248,7 +1433,6 @@ function mountAudio(e, list) {
   // 恢复随机要重洗序列（当前曲固定第一），逻辑跟点按钮完全一致
   MP.repeat = Math.min(2, Math.max(0, parseInt(localStorage.getItem('mp_repeat'), 10) || 0));
   if (localStorage.getItem('mp_shuffle') === '1') { MP.shuffle = true; mpShuffleSeq(); }
-  MP.played = {};   // 新的一次播放会话：这本账只在「这次打开播放器」期间有效
   MP.lyric = [];
   MP.lyIdx = -1;
   MP.lyricTried = false;
@@ -1318,7 +1502,7 @@ function mountAudio(e, list) {
           '</div>' +
           '<div class="mp-btns">' +
             '<button class="mp-btn" id="mpPrev" title="上一首">' + MP_ICON.prev + '</button>' +
-            '<button class="mp-btn primary" id="mpPlay" title="播放">' + MP_ICON.play + '</button>' +
+            '<button class="mp-btn primary" id="mpPlay" title="播放">' + mpIconPlayPause() + '</button>' +
             '<button class="mp-btn" id="mpNext" title="下一首">' + MP_ICON.next + '</button>' +
           '</div>' +
           '<div class="mp-side mp-side-r">' +
@@ -1385,7 +1569,10 @@ function mountAudio(e, list) {
   $('mpQmask').addEventListener('click', () => mpToggleQueue(false));
   $('mpPlay').addEventListener('click', () => {
     if (!MP.el) return;
-    if (MP.el.paused) mpUserPlay(); else mpUserPause();
+    // ⭐ 判据是「真在播」而不是 el.paused：iOS 被打断后元素仍自称在播却没声，
+    // 若还照 el.paused 判，这一下会走成「暂停」（本来就没声，等于没反应），
+    // 用户得点第二次 —— 这就是「回来要点两次播放键」。
+    if (MP.el.paused || !mpAlive()) mpUserPlay(); else mpUserPause();
   });
   // audio 元素的事件只绑一次（见 mpBindAudioEl），这里只绑随 DOM 重建的控件
   // 拖动中只更新「已播时间」的显示，松手才真 seek —— 每动一像素就 seek 一次
@@ -1405,7 +1592,9 @@ function mountAudio(e, list) {
   mpRender();
   // 只有「从列表 / 音乐页重新点开一首歌」才允许拿服务端旧进度接着听。
   // 切歌（上一曲 / 下一曲 / 自动下一首 / 队列点歌）一律走默认的不续播。
-  mpPlay(true);
+  // 点开一首歌一律从头播：音频进度全局只有一个坑位（mp_session），
+  // 只在刷新 / 重开浏览器时恢复当前曲的位置，切歌 / 点歌都不读旧进度。
+  mpPlay();
   hookMediaSession();
 }
 
@@ -1418,8 +1607,8 @@ function mpMinimize() {
   // ⭐ 收起只是 UI 折叠成迷你条，页面仍在最前台。前端没有 Web Audio，EQ 全在后端，
   // 所以这个普普通通的 <audio> 原样继续播即可 —— 不需要拆链、不需要换元素。
   // 后端 EQ 对 iOS 最小化 / 锁屏 / 切后台没有任何限制，比前端改道 Web Audio 稳得多。
-  $('viewer').classList.remove('on');
-  document.body.classList.add('mini-on');
+  viewerOff();
+  miniOn();
   mpMiniSync();
   mpSessionSave();   // 迷你/全屏状态也要记，刷新后回同一种
   // 收起重排后盯一眼：万一系统把歌停了（极少见），用户没主动暂停就接回来。
@@ -1428,8 +1617,8 @@ function mpMinimize() {
 function mpExpand() {
   if (!MP.on) return;
   MP.mini = false;
-  document.body.classList.remove('mini-on');
-  $('viewer').classList.add('on');
+  miniOff();
+  viewerOn();
   // 藏了一阵子再出来，歌词居中内边距和吸附位置都要重算
   mpPadLyric();
   mpSessionSave();
@@ -1453,8 +1642,9 @@ function mpMiniSync() {
 function mpMiniPaint() {
   const b = $('mpMiniPlay');
   if (!b) return;
-  const playing = MP.el && !MP.el.paused;
-  b.innerHTML = playing ? MP_ICON.pause : MP_ICON.play;
+  const playing = mpAlive();
+  // 跟全屏播放键同一套：只切类，CSS 做播放/暂停图标的交叉淡化
+  b.classList.toggle('playing', !!playing);
   // 循环/随机/静音三个状态钮跟全屏保持一致（全屏切换时都会调到这儿）
   const lp = $('mpMiniLoop');
   if (lp) {
@@ -1488,7 +1678,7 @@ $('mpMiniPrev').addEventListener('click', () => { if (MP.on) mpStep(-1); });
 $('mpMiniNext').addEventListener('click', () => { if (MP.on) mpStep(1); });
 $('mpMiniPlay').addEventListener('click', () => {
   if (!MP.el) return;
-  if (MP.el.paused) mpUserPlay(); else mpUserPause();
+  if (MP.el.paused || !mpAlive()) mpUserPlay(); else mpUserPause();
 });
 $('mpMiniClose').addEventListener('click', closeViewer);
 // 迷你条上的循环/随机：复用全屏那两个切换函数，图标状态由 mpMiniPaint 统一刷
@@ -1532,8 +1722,10 @@ window.addEventListener('resize', () => {
 function mpPaintBtn() {
   const b = $('mpPlay');
   if (!b) return;
-  const playing = MP.el && !MP.el.paused;
-  b.innerHTML = playing ? MP_ICON.pause : MP_ICON.play;
+  // 「真在播」= 不只没暂停，进度也确实在走（见 mpAlive 的说明）
+  const playing = mpAlive();
+  // 只切类，不换 innerHTML：两个图标叠在按钮里，交叉淡化交给 CSS（见 .mp-ico）。
+  b.classList.toggle('playing', !!playing);
   b.title = playing ? '暂停' : '播放';
   mpMiniPaint();
   // 唱片转不转、唱针落不落在盘上，都只看这一个类
@@ -1760,8 +1952,9 @@ function mpToggleQueue(on) {
   if (cur && q) q.scrollTop = Math.max(0, cur.offsetTop - q.clientHeight / 2);
 }
 
-// allowRestore=true 仅用于「主动点开一首歌」；默认 false = 从头放。
-function mpPlay(allowRestore) {
+// ⭐ 音频进度全局只有一个坑位：mp_session（localStorage），只服务刷新 / 重开浏览器。
+// 任何一次 mpPlay 都是「换了一首歌」→ 从头播，绝不读服务端 per-song 进度。
+function mpPlay() {
   const e = MP.list[MP.i];
   if (!e || !MP.el) return;
   // 收藏星、「刚点开」、进度条都跟着当前这一首走 —— viewerEntry 是它们的唯一来源
@@ -1769,17 +1962,16 @@ function mpPlay(allowRestore) {
   const L = mpLabel(e);
   $('viewerName').textContent = L.title;
   syncViewerFav();
-  // 每换一首曲子换一个序号：mpRestore 是异步的，回来时可能已经切歌了，
-  // 不拿序号核对就会把上一首的进度贴到下一首。
+  // 每换一首曲子换一个序号：刷新恢复 / 卡顿重连都是异步的，回来时可能已经切歌了，
+  // 不拿序号核对就会把上一首的位置贴到下一首。
   MP.trackSeq++;
-  // ⭐ 切歌不准从中间开始。以前这里只按「本次会话有没有播过这首」判断，
-  // 于是跳到一首以前听过的歌时 allowRestore=true，mpRestore 就把服务端存的
-  // 旧位置拽回来 —— 正是用户看到的「下一曲进度条在中间」。
-  MP.allowRestore = !!allowRestore && !MP.played[e.path];
-  MP.played[e.path] = 1;
   // 服务端边转边发（首包 ~150ms），拿到的第一段就是处理过的音色，
   // 不需要再「等成品就绪悄悄换源」那套观察了。
   MP.el.src = mpSrcFor(e);
+  // 换源瞬间就把元素位置钉回 0：这样紧随其后的 mpSessionSave() 存的是新歌的 0，
+  // 而不是浏览器复用元素时可能残留的上一首位置。真正的「刷新恢复位置」由
+  // mpSessionRestore 的 once 监听在 loadedmetadata 之后写回，不冲突。
+  try { MP.el.currentTime = 0; } catch (err) {}
   // 换歌时先把系统进度条归零；play 事件紧接着会把 playbackState 翻回 playing。
   // 不重置的话 Android 通知栏会拿上一首的 duration/position 继续算。
   mpMsReset(); mpMsState('paused');
@@ -1817,7 +2009,7 @@ function mpStep(d) {
   mpSave(false);   // 离开当前曲目前先落一次进度
   MP.pos = n;
   MP.i = MP.seq[n];
-  // 不传 allowRestore：手动跳下一曲 / 上一曲一律从 0 开始，不读新歌的历史进度
+  // 切歌一律从头：音频进度只有一个坑位（刷新恢复用），不读新歌的历史进度
   mpPlay();
 }
 
@@ -1949,50 +2141,22 @@ function mpTick() {
   mpSessionSave();   // 播放位置也跟着落一份，刷新后从最近的位置恢复
 }
 
+// ⭐ 音频进度全局只留一个坑位：localStorage 的 mp_session（当前正在播的这一首）。
+// 只服务「刷新 / 重开浏览器」这一种场景。不再按 root/path 往服务端写「每首歌一份」的
+// 进度 —— 那是视频 hookProgress 在用的表，音频彻底不碰，保证点任何一首都从头开始。
 function mpSave(reset) {
-  const e = MP.list[MP.i];
-  if (!e || !MP.el) return;
-  if (reset) {
-    api('/api/fs/progress', { root: mpRootOf(e), path: e.path, pos: 0, dur: 0 }).catch(() => {});
-    return;
-  }
-  const d = MP.el.duration;
-  const pos = MP.el.currentTime;
-  // 一分钟以内的不记（跟视频那套判据一致），免得列表里全是「上次听到 0:12」
-  if (!isFinite(d) || d < 60 || !isFinite(pos) || pos <= 0) return;
-  api('/api/fs/progress', {
-    root: mpRootOf(e), path: e.path,
-    pos: Math.floor(pos), dur: Math.floor(d),
-  }).catch(() => {});
-}
-
-// seq 是触发 loadedmetadata 那一刻的曲目序号。切歌、自动下一首都会让 trackSeq 前进，
-// 只要对不上就直接丢掉这次恢复 —— 绝不把 A 的历史位置贴到 B 上。
-async function mpRestore(seq) {
-  // 同一次会话里切回来的歌，从头放 —— 用户的原话是「切歌了进度就不存在，
-  // 只有退出去再回来那种才该接着放」
-  if (!MP.allowRestore || seq !== MP.trackSeq) return;
-  const e = MP.list[MP.i];
-  if (!e || !MP.el || !isFinite(MP.el.duration) || MP.el.duration < 60) return;
-  try {
-    const r = await api('/api/fs/progress?' + q(mpRootOf(e), e.path));
-    // await 期间可能已经切歌 / 又刷新恢复过，两道都要核对
-    if (seq !== MP.trackSeq || r.code !== 0 || !r.data || MP.list[MP.i] !== e) return;
-    const pos = +r.data.pos || 0;
-    // 结尾 15 秒内不续播：基本等于听完了，再跳到尾巴上没意义
-    if (pos > 20 && pos < MP.el.duration - 15) {
-      if (seq !== MP.trackSeq || MP.list[MP.i] !== e) return;
-      MP.el.currentTime = pos;
-      mpSyncLyric(pos, true);
-      toast('从上次听到的地方继续');
-    }
-  } catch (err) { /* 拉不到就从头放，对用户无感 */ }
+  if (reset) { mpSessionClear(); return; }   // 整首听完 / 关播放器：坑位作废
+  mpSessionSave();
 }
 
 // ---------- 播放器会话：刷新/重开浏览器后原样恢复 ----------
-// 存的是「界面状态」：队列、当前曲、播放位置、迷你还是全屏。
-// 跟 mpSave 的服务端进度是两回事 —— 那个管「下次点这首歌从哪听」，这个管「刷新后播放器还在不在」。
+// 这就是全局唯一的进度坑位：队列、当前曲、当前曲的位置、迷你还是全屏都在这一个快照里。
+// 视频那套 /api/fs/progress（hookProgress / saveVideoProgress）跟它完全无关，互不影响。
 function mpSessionSave() {
+  // ⭐ 刷新恢复期间，元素的 currentTime 还没被 once 监听写回坑位里的旧 t，
+  // 这时候任何 save 都会把 t 存成 0（play / mpPlay 都会触发）。先冻住，
+  // 等 once 监听把位置写回并主动 save 一次再解冻。
+  if (MP.restoring) return;
   try {
     if (!MP.on || !MP.list.length) { localStorage.removeItem('mp_session'); return; }
     const t = (MP.el && isFinite(MP.el.currentTime)) ? MP.el.currentTime : 0;
@@ -2015,12 +2179,10 @@ function mpSessionRestore() {
   if (!e || !e.path) return;
   // 暂停状态也要原样恢复：刷新前是暂停的，回来还得是暂停的（歌和位置都在，但不自动开唱）
   MP.holdPlay = !!s.paused;
+  MP.restoring = true;   // 坑位冻结：metadata 到达前不许把旧 t 覆盖成 0
   mountAudio(e, s.list);
   MP.holdPlay = false;   // 只约束 mountAudio 里的那一声 mpPlay，之后切歌照常自动播
-  // ⚠️ 必须在 mountAudio **之后**：它里面会把 MP.played 重置成 {}，以前设在前面白设了，
-  // 于是 mpRestore 会异步拿服务端旧进度回来，把刚恢复的刷新前位置 t 盖掉。
-  MP.played[e.path] = 1;
-  MP.allowRestore = false;   // 刷新恢复只认本地快照，不叠加服务端进度
+  // 现在没有服务端续播那条异步路径了，刷新恢复只需这一个本地快照，干净得多。
   MP.pos = Math.max(0, Math.min(s.list.length - 1, s.pos | 0));
   MP.i = i;
   const t = +s.t || 0;
@@ -2029,21 +2191,27 @@ function mpSessionRestore() {
     // 否则用户刷新后马上跳下一曲，第一次 loadedmetadata 会把上一首的 t 贴到新歌。
     const seq = MP.trackSeq;   // mountAudio → mpPlay 已经给它 +1
     MP.el.addEventListener('loadedmetadata', () => {
-      if (seq !== MP.trackSeq || MP.list[MP.i] !== e) return;
+      if (seq !== MP.trackSeq || MP.list[MP.i] !== e) { MP.restoring = false; return; }
       try {
         if (isFinite(MP.el.duration)) MP.el.currentTime = Math.min(t, Math.max(0, MP.el.duration - 1));
         mpSeekSync();
         mpSyncLyric(MP.el.currentTime, true);
       } catch (err) {}
+      MP.restoring = false;
+      mpSessionSave();   // 坑位立刻写回恢复后的 t
     }, { once: true });
+    // 兜底：8 秒还没 metadata（媒体加载失败 / 格式不支持），别把保存永久冻住
+    setTimeout(() => { MP.restoring = false; }, 8000);
+  } else {
+    MP.restoring = false;   // 没有位置要恢复，没必要冻
   }
   if (s.mini) {
     MP.mini = true;
-    document.body.classList.add('mini-on');
+    miniOn();
     mpMiniSync();
   } else {
     // 刷新前开着全屏播放页，那就还回全屏
-    $('viewer').classList.add('on');
+    viewerOn();
     mpPadLyric();
   }
   muMarkPlaying();
@@ -2217,7 +2385,7 @@ function hookMediaSession() {
   set('seekbackward', null);
   set('seekforward', null);
   // 首次挂上就把状态对齐：刷新恢复成暂停时别让通知栏还亮着「正在播放」
-  mpMsState(MP.el && MP.el.getAttribute('src') ? (MP.el.paused ? 'paused' : 'playing') : 'none');
+  mpMsState(MP.el && MP.el.getAttribute('src') ? (mpAlive() ? 'playing' : 'paused') : 'none');
 }
 
 // ---------- 文本预览 ----------
@@ -2415,7 +2583,7 @@ async function openTextViewer(e, dl) {
   body.innerHTML = '<div class="viewer-msg">正在读取…</div>';
   $('viewer').classList.remove('fs');   // 同 openViewer：清掉可能残留的沉浸态
   $('viewer').classList.remove('is-audio');   // 文本预览不是音频，顶栏标题要显示文件名
-  $('viewer').classList.add('on');
+  viewerOn();
   try {
     const res = await fetch(dl + '&inline=1', { credentials: 'same-origin' });
     if (!res.ok) throw new Error('读取失败（' + res.status + '）');
@@ -3362,7 +3530,7 @@ function closeViewer() {
   }
   // 迷你条跟着一起收：播放器都关了，底部不能再挂着一条
   MP.mini = false;
-  document.body.classList.remove('mini-on');
+  miniOff();
   mpMiniLySet('');
   muMarkPlaying();
   const body = $('viewerBody');
@@ -3374,8 +3542,8 @@ function closeViewer() {
   // EQ 在后端做，没有前端音效链要拆，直接把元素停掉即可。
   const au = $('mpAudio');
   if (au) { try { au.pause(); au.removeAttribute('src'); au.load(); } catch (e) {} }
-  $('viewer').classList.remove('on');
-  $('viewer').classList.remove('is-audio');
+  viewerOff();
+  $('viewer').classList.remove('is-audio', 'is-entering');
   body.innerHTML = '';
   $('viewerFoot').innerHTML = '';
   // 播放器真关了：把系统通知栏状态收掉，别留一条「暂停在 3:12」的僵尸媒体卡片
@@ -4980,7 +5148,7 @@ const MU = {
   rootFilter: '',               // 全部曲目的文件夹筛选：'' = 所有，否则是根的 path
   plId: 0, plName: '',          // 歌单详情
   stack: [],                    // 导航栈，顶层是 tab 本身
-  scanTimer: 0, searchTimer: 0,
+  scanTimer: 0, searchTimer: 0, loadSeq: 0,   // loadSeq：切 tab 动画期间连点，旧的加载直接作废
   curTracks: [],                // 当前视图的曲目（点击行就从这里起播）
   favs: [], favSet: null,       // 歌曲收藏（跟文件收藏完全独立）；favSet 为 null 表示还没拉过
   libDirs: null,                // 曲库目录列表（筛选条用），null = 还没拉过
@@ -5001,6 +5169,8 @@ const MU_ICON = {
   // 特意不用齿轮 —— 顶栏「管理台」已经是齿轮了，两个齿轮挨着放，手机上分不清谁是谁。
   // 这里用「带音符的文件夹」，正好对应它管的东西：曲库扫哪些目录。
   mgr: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h3.7l1.8 2h9.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z"/><path d="M13.4 16.8V9.9l3.1-.7"/><circle cx="11" cy="16.9" r="2.1"/></svg>',
+  play: '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.2v13.6c0 .8.9 1.3 1.6.9l10.4-6.8a1.1 1.1 0 0 0 0-1.8L9.6 4.3C8.9 3.9 8 4.4 8 5.2z"/></svg>',
+  refresh: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>',
 };
 
 function muEntry(t) {
@@ -5019,7 +5189,7 @@ function playFromMusic(tracks, idx) {
   // 点歌不打断浏览：底部迷你条直接开唱，想看全屏（黑胶/歌词）再点条子
   mountAudio(list[idx], list);
   MP.mini = true;
-  document.body.classList.add('mini-on');
+  miniOn();
   mpMiniSync();
   mpSessionSave();   // mountAudio 里存过一次，但那时 mini 还没置上 —— 这里按最终状态再存一遍
 }
@@ -5070,12 +5240,16 @@ async function applyMusic(on) {
         MU.adminKnown = true;
       }
     }
+    // 页头按钮是静态元素（不随视图重画），管理员才露出来的两个入口在这里定显隐
+    $('muRescan').hidden = !MU.admin;
+    $('muMgr').hidden = !MU.admin;
     muFavLoad();   // 顺手把歌曲收藏拉一遍，播放页的 ☆ 状态要用
     muRestore();   // 上次逛到哪（tab/歌单/搜索词）就落在哪 —— 刷新、重开都不丢位置
     muLoad();
   }
-  // 顶栏换了（文件页顶栏 ↔ 音乐顶栏），mu-head 的吸附高度要跟着重测
+  // 顶栏换了（文件页顶栏 ↔ 音乐顶栏），同步高度与回顶按钮状态
   syncHeadHeight();
+  muPaintToTop();
 }
 
 // 只负责改 URL（进历史栈），真正的切换交给 hashchange 事件。
@@ -5095,7 +5269,14 @@ function setMusic(on) {
 }
 
 $('btnMusic').addEventListener('click', () => setMusic(true));
-$('muExit').addEventListener('click', () => setMusic(false));
+// 顶栏左箭头 = 统一的「返回」：下钻时退上一级，顶级时退出音乐页。
+// ⭐ 以前 tabs 行里另有一个 #muBack，它一显示就把 tabs 整组右推 42px，
+// 切 tab 时又弹回来 —— 用户看到的「左右移动」就是它。现在 tabs 行不放返回键，
+// 所有返回都走这个常驻箭头，位置永不变，也不用改 DOM 结构。
+$('muExit').addEventListener('click', () => {
+  if (MU.stack.length > 1) muBack();
+  else setMusic(false);
+});
 window.addEventListener('hashchange', () => applyMusic(location.hash === '#music'));
 
 // 带 #music 打开（在音乐页刷新 / 书签 / 分享的链接）：直接落回音乐页，
@@ -5146,7 +5327,28 @@ function muApply(v) {
   MU.tab = v.tab; MU.artist = v.artist; MU.album = v.album; MU.rootFilter = v.rootFilter || ''; MU.plId = v.plId; MU.plName = v.plName;
 }
 
+// 切 tab / 下钻时内容先淡出再淡入，避免「啪」一下硬切。搜索打字走同视图分支，
+// 不做淡出（每敲一个字闪一下反而烦），但新内容照样淡入。
+const MU_FADE_MS = 130;
+function muFadeOut(body) {
+  return new Promise((resolve) => {
+    if (!body || !body.firstChild || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      resolve(); return;
+    }
+    body.classList.add('mu-leaving');
+    setTimeout(resolve, MU_FADE_MS);
+  });
+}
+function muFadeIn(body) {
+  if (!body || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  body.classList.remove('mu-leaving', 'mu-enter');
+  body.classList.add('mu-enter');        // 先瞬间压到透明 + 微移
+  void body.offsetWidth;                 // 强制回流，让 transition 有起点
+  requestAnimationFrame(() => body.classList.remove('mu-enter'));   // 下一帧放开 → 平滑淡入
+}
+
 async function muLoad() {
+  const seq = ++MU.loadSeq;
   clearTimeout(MU.scanTimer);
   // 视图状态落 localStorage：刷新 / 重开浏览器后原样恢复（tab、下钻位置、歌单、搜索词）。
   // 所有会改视图的路（muGo/muBack/切 tab/搜索/重命名）最后都汇到 muLoad，在这里存最稳。
@@ -5156,22 +5358,35 @@ async function muLoad() {
   // 头部（tab/返回/搜索框）只在视图结构变化时重画：搜索打字时只刷 body，
   // 否则输入框每 300ms 被重建一次，焦点直接飞了
   const key = [MU.tab, MU.artist, MU.album, MU.plId].join('|');
-  if ($('muBody') && $('musicView').dataset.view === key) {
-    $('muBody').innerHTML = '';
-  } else {
+  const switched = !$('muBody') || $('musicView').dataset.view !== key;
+  // 切 tab 时先给旧内容一点淡出时间；期间用户又点了别的 tab，旧加载直接作废
+  if (switched) await muFadeOut($('muBody'));
+  if (seq !== MU.loadSeq) return;
+  if (switched) {
     muRenderHead();
     $('musicView').dataset.view = key;
+  } else if ($('muBody')) {
+    $('muBody').innerHTML = '';
   }
   const body = $('muBody');
   const qs = MU.q ? 'q=' + encodeURIComponent(MU.q) + '&' : '';
+  // 读盘慢的时候先摆骨架占位：90ms 内回来就啥也不显示，只有真慢才看得到，
+  // 避免本机秒开时闪一下。isConnected 挡住被下一次渲染换掉的旧 body。
+  clearTimeout(MU.skelTimer);
+  MU.skelTimer = setTimeout(() => {
+    if (body && body.isConnected) body.innerHTML = muSkeletonHTML(MU.tab);
+  }, 90);
+  const fresh = () => seq === MU.loadSeq && body.isConnected;
   try {
     if (MU.tab === 'artists') {
       const r = await api('/api/music/artists?' + qs);
+      if (!fresh()) return;
       body.innerHTML = '';
       muRenderArtists((r.data || []));
     } else if (MU.tab === 'albums') {
       const r = await api('/api/music/albums?' +
         (MU.artist ? 'artist=' + encodeURIComponent(MU.artist) + '&' : '') + qs);
+      if (!fresh()) return;
       body.innerHTML = '';
       muRenderAlbums(r.data || []);
     } else if (MU.tab === 'tracks') {
@@ -5182,12 +5397,14 @@ async function muLoad() {
       const r = await api('/api/music/tracks?' + p);
       if (!MU.favSet) await muFavLoad();   // 行上要画收藏星，星的状态不能猜
       if (!MU.artist && !MU.album) await muLibDirsLoad();   // 筛选条要曲库目录名
+      if (!fresh()) return;
       body.innerHTML = '';
       muRenderTracks(r.data || []);
     } else if (MU.tab === 'favs') {
       // 收藏列表进音乐页时已经拉过；这里只补「还没拉过」的情况 ——
       // 搜索框每敲一下都会重画 body，别让它每敲一下都发一次请求
       if (!MU.favSet) await muFavLoad();
+      if (!fresh()) return;
       body.innerHTML = '';
       // 收藏是本地就有的一份，搜索直接前端过滤，不用再跑服务端
       const kw = MU.q.trim().toLowerCase();
@@ -5197,19 +5414,36 @@ async function muLoad() {
         : MU.favs;
       muRenderFavs(list);
     } else if (MU.tab === 'playlists') {
-      if (MU.plId) {
-        const r = await api('/api/music/playlist/items?id=' + MU.plId);
-        if (!MU.favSet) await muFavLoad();   // 歌单里的每一首也要画收藏星
-        body.innerHTML = '';
-        muRenderPlItems(r.data || []);
-      } else {
-        const r = await api('/api/music/playlist');
-        body.innerHTML = '';
-        muRenderPlaylists(r.data || []);
+      // 歌单页「进来就展开」：先拉列表，默认选中第一个（或上次停留的那个），
+      // 顶部给一排切换 chips，点哪个看哪个 —— 省掉原来「点歌单 → 再点某一首」的额外一步。
+      const plr = await api('/api/music/playlist');
+      if (!fresh()) return;
+      const pls = plr.data || [];
+      body.innerHTML = '';
+      if (!pls.length) {
+        // 一个歌单都没有：保留空态 + 新建入口
+        MU.plId = 0; MU.plName = '';
+        muRenderPlaylists([]);
+        return;
       }
+      // 首次进来（plId=0）或当前歌单刚被删掉 → 默认落第一个「有曲目」的歌单
+      // （刚建的空歌单排在前面时，展开它是空白页，不如直接展示有内容的，少一次点）；
+      // 全是空歌单才回退到第一个。同步栈顶让返回键落点一致。
+      if (!MU.plId || !pls.some((p) => p.id === MU.plId)) {
+        const def = pls.find((p) => p.count > 0) || pls[0];
+        MU.plId = def.id; MU.plName = def.name;
+        if (MU.stack.length) Object.assign(MU.stack[MU.stack.length - 1], { plId: MU.plId, plName: MU.plName });
+      }
+      const r = await api('/api/music/playlist/items?id=' + MU.plId);
+      if (!MU.favSet) await muFavLoad();   // 歌单里的每一首也要画收藏星
+      if (!fresh()) return;
+      muRenderPlItems(r.data || [], pls);
     }
   } catch (e) {
-    if (e.message !== '未登录') body.innerHTML = '<div class="mu-empty">' + esc(e.message) + '</div>';
+    if (seq === MU.loadSeq && e.message !== '未登录') body.innerHTML = '<div class="mu-empty">' + esc(e.message) + '</div>';
+  } finally {
+    clearTimeout(MU.skelTimer);
+    if (seq === MU.loadSeq) muFadeIn(body);
   }
   muCheckScan();
 }
@@ -5222,6 +5456,8 @@ async function muCheckScan() {
     const r = await api('/api/music/status');
     st = r.data || {};
   } catch (e) { return; }
+  muHeroStat(st);
+  if (st.count > 0 && !MU.libDirs) muLibDirsLoad().then(() => muHeroStat(st));
   const bar = $('muScan');
   if (!bar) return;
   if (st.scanning) {
@@ -5359,42 +5595,41 @@ $('libMgrScan').addEventListener('click', async () => {
 });
 
 function muRenderHead() {
-  const back = MU.stack.length > 1;
-  let title = '';
-  if (MU.tab === 'artists') title = '歌手';
-  else if (MU.tab === 'albums') title = MU.artist || '专辑';
-  else if (MU.tab === 'tracks') title = MU.album || (MU.artist ? MU.artist + ' 的曲目' : '全部曲目');
-  else if (MU.tab === 'favs') title = '收藏的歌曲';
-  else if (MU.tab === 'playlists') title = MU.plId ? MU.plName : '歌单';
-  $('musicView').innerHTML =
-    '<div class="mu-head">' +
-      '<button class="icon-btn mu-back" id="muBack"' + (back ? '' : ' hidden') + ' title="返回">' + MU_ICON.back + '</button>' +
+  // ⭐ tabs / 返回 / 扫描条只建一次。以前每次切 tab 都整块 innerHTML 重写，
+  // 导航条被销毁重建，连带顶栏那一片跟着重排/重绘 —— 用户看到的就是
+  // 「我的音乐那块闪了一下」。现在切 tab 只切 on 状态和返回键提示，DOM 节点不动。
+  if (!$('muTabs')) {
+    // 主导航 tabs 放进顶栏的 #muTabsHost（顶栏第二行），跟品牌 / 搜索同属一个顶部容器。
+    // 以前它在内容区的 .mu-head 里单独占一行，视觉上「重顶栏 + 一层导航 + 内容」三段割裂、
+    // 头重脚轻；收到顶栏后顶部是一个完整导航块，内容从下方直接开始。
+    $('muTabsHost').innerHTML =
       '<div class="mu-tabs" id="muTabs">' +
         ['artists|歌手', 'albums|专辑', 'tracks|全部曲目', 'favs|收藏', 'playlists|歌单'].map((s) => {
           const [k, n] = s.split('|');
-          return '<button data-tab="' + k + '"' + (MU.tab === k ? ' class="on"' : '') + '>' + n + '</button>';
+          return '<button data-tab="' + k + '">' + n + '</button>';
         }).join('') +
-      '</div>' +
-      // 曲库管理就地做在音乐页里：加目录本来就是「边看歌边决定」的事，
-      // 逼人跳到管理台反而绕。只有管理员能看到这个入口。
-      // （搜索框挪到 mu-topbar 了 —— 它对所有 tab 通用，顶栏常驻不再随 head 重画）
-      (MU.admin ? '<button class="icon-btn mu-mgr" id="muMgr" title="曲库管理">' + MU_ICON.mgr + '</button>' : '') +
-    '</div>' +
-    '<div class="mu-scan" id="muScan" hidden></div>' +
-    '<div class="mu-body" id="muBody"></div>';
-  $('muBack').addEventListener('click', muBack);
-  const mgrBtn = $('muMgr');
-  if (mgrBtn) mgrBtn.addEventListener('click', openLibMgr);
-  $('muTabs').addEventListener('click', (e) => {
-    const b = e.target.closest('[data-tab]');
-    if (!b || b.dataset.tab === MU.tab) return;
-    MU.stack = [];
-    muGo({ tab: b.dataset.tab, artist: '', album: '', plId: 0, plName: '' });
+      '</div>';
+    // 内容区只留扫描条 + 列表容器
+    $('musicView').innerHTML =
+      '<div class="mu-scan" id="muScan" hidden></div>' +
+      '<div class="mu-body" id="muBody"></div>';
+    $('muTabs').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-tab]');
+      if (!b || b.dataset.tab === MU.tab) return;
+      MU.stack = [];
+      muGo({ tab: b.dataset.tab, artist: '', album: '', plId: 0, plName: '' });
+    });
+    syncHeadHeight();
+  }
+  // 只切状态，不碰节点 —— 这样切 tab / 下钻时顶部这些元素完全静止。
+  // 下钻的「返回」走顶栏那个常驻箭头（见 #muExit 的点击），这里只更新它的提示文字。
+  $('muExit').title = MU.stack.length > 1 ? '返回上一级' : '返回文件';
+  $('muTabs').querySelectorAll('[data-tab]').forEach((b) => {
+    b.classList.toggle('on', b.dataset.tab === MU.tab);
   });
-  syncHeadHeight();
 }
 
-// 顶栏搜索框是静态元素（不随 head 重画），监听绑一次就够。
+// 页头搜索框是静态元素（不随 head 重画），监听绑一次就够。
 // 搜索对所有 tab 通用：歌手/专辑/曲目/收藏/歌单都在各自接口里吃 q 参数。
 $('muSearch').addEventListener('input', () => {
   clearTimeout(MU.searchTimer);
@@ -5403,6 +5638,20 @@ $('muSearch').addEventListener('input', () => {
     MU.stack[MU.stack.length - 1] = muView();
     muLoad();
   }, 300);
+});
+
+// 页头上的三个按钮也是静态元素，绑定一次；显隐由 applyMusic 按身份决定。
+$('muShuffleAll').addEventListener('click', muShuffleAll);
+$('muMgr').addEventListener('click', openLibMgr);
+$('muRescan').addEventListener('click', async () => {
+  const btn = $('muRescan');
+  btn.classList.add('busy');
+  try {
+    const r = await api('/api/music/scan', {}, 'POST');
+    if (r.code !== 0) toast(r.msg);
+    else { toast('已开始重新扫描'); muLoad(); }
+  } catch (e) { toast(e.message); }
+  finally { btn.classList.remove('busy'); }
 });
 
 // 顶栏是 sticky 的，音乐页的 tabs 想贴在它下沿 —— 得知道顶栏到底多高。
@@ -5417,20 +5666,92 @@ function syncHeadHeight() {
   document.documentElement.style.setProperty('--fs-head-h', bar.offsetHeight + 'px');
   if (!syncHeadHeight.bound) {
     syncHeadHeight.bound = true;
-    window.addEventListener('resize', () => { if (MU.on) syncHeadHeight(); });
+    window.addEventListener('resize', () => {
+      if (MU.on) { syncHeadHeight(); muAlignPlaylistSwitch(); }
+    });
+  }
+}
+
+// 音乐长列表回顶：滚下约一屏后才出现，避免页面一打开就多一个悬浮控件。
+function muPaintToTop() {
+  const b = $('muToTop');
+  if (!b) return;
+  b.classList.toggle('on', !!(MU.on && window.scrollY > 480));
+}
+window.addEventListener('scroll', muPaintToTop, { passive: true });
+$('muToTop').addEventListener('click', () => {
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+});
+
+// 骨架屏：扫盘慢的时候先摆一排「正在长出来」的占位卡片/行，别让页面空得像坏了。
+// 90ms 后才真正插进 DOM —— 本机秒回的请求根本来不及闪，只有真慢的才看得到。
+function muSkeletonHTML(tab) {
+  const sh = '<span class="mu-sk-s"></span>';
+  if (tab === 'artists' || tab === 'albums') {
+    let s = '<div class="mu-sk-grid' + (tab === 'artists' ? ' mu-sk-round' : '') + '">';
+    for (let i = 0; i < 10; i++) {
+      s += '<div class="mu-sk-card">' + sh +
+        '<span class="mu-sk-l mu-sk-s"></span><span class="mu-sk-m mu-sk-s"></span></div>';
+    }
+    return s + '</div>';
+  }
+  let s = '<div class="mu-sk-list">';
+  for (let i = 0; i < 7; i++) {
+    s += '<div class="mu-sk-row"><span class="mu-sk-i mu-sk-s"></span>' +
+      '<span class="mu-sk-main"><i class="mu-sk-l mu-sk-s"></i><i class="mu-sk-m mu-sk-s"></i></span>' +
+      '<span class="mu-sk-d mu-sk-s"></span></div>';
+  }
+  return s + '</div>';
+}
+
+// 随机播放整个曲库：不打断当前浏览，直接从全库里挑一首起播并打开随机模式。
+async function muShuffleAll() {
+  if (MU.shuffling) return;
+  MU.shuffling = true;
+  try {
+    const r = await api('/api/music/tracks');
+    const list = (r.data || []).map(muEntry);
+    if (!list.length) { toast('曲库还是空的，先添加曲库目录'); return; }
+    playFromMusic(list, Math.floor(Math.random() * list.length));
+    if (!MP.shuffle) mpToggleShuffleForce(true);
+    toast('随机播放 ' + list.length + ' 首');
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    MU.shuffling = false;
+  }
+}
+
+// 概览条上的统计：曲库首数 + 扫描进度。用 status 接口的数据，和扫描横幅同源。
+function muHeroStat(st) {
+  const el = $('muHeroStat');
+  if (!el) return;
+  if (!st) { el.textContent = ''; return; }
+  if (st.scanning) {
+    el.textContent = st.total ? '正在扫描 · ' + (st.done || 0) + ' / ' + st.total : '正在扫描曲库…';
+  } else if (st.count > 0) {
+    const dirs = (MU.libDirs || []).length;
+    el.textContent = st.count + ' 首曲目' + (dirs ? ' · ' + dirs + ' 个曲库' : '');
+  } else {
+    el.textContent = '曲库还是空的';
   }
 }
 
 // action：空态里顺带给个能点的东西（比如「添加曲库目录」）。
 // 必须塞进 .mu-empty 里面才居中对齐 —— 挂成兄弟节点会贴着左边，像走错门。
 function muEmpty(msg, sub, action) {
-  return '<div class="mu-empty">' + MU_ICON.note + '<div class="mu-empty-t">' + esc(msg) + '</div>' +
+  return '<div class="mu-empty">' +
+    '<div class="mu-empty-art"><span class="mu-empty-ring"></span>' + MU_ICON.note +
+      '<span class="mu-empty-wave"><i></i><i></i><i></i><i></i><i></i></span></div>' +
+    '<div class="mu-empty-t">' + esc(msg) + '</div>' +
     (sub ? '<div class="mu-empty-s">' + esc(sub) + '</div>' : '') + (action || '') + '</div>';
 }
 
 function muRenderArtists(list) {
   const body = $('muBody');
   if (!list.length) {
+    // 搜不到 ≠ 曲库空：别让人以为库坏了去加目录，先请他换个词
+    if (MU.q) { body.innerHTML = muEmpty('没有找到匹配的歌手', '换个关键词试试'); return; }
     // 空态是管理员最需要「加目录」的地方：不摆按钮，他得先去猜那个图标在哪。
     // 共享账号不给副标题 —— 上面横幅已经把「等管理员加」说过了，再说一遍是啰嗦。
     body.innerHTML = muEmpty('还没有歌手', MU.admin ? '曲库扫完就会出现在这里' : '',
@@ -5452,7 +5773,7 @@ function muRenderArtists(list) {
 
 function muRenderAlbums(list) {
   const body = $('muBody');
-  if (!list.length) { body.innerHTML = muEmpty('没有专辑', MU.q ? '换个关键词试试' : ''); return; }
+  if (!list.length) { body.innerHTML = muEmpty(MU.q ? '没有找到匹配的专辑' : '没有专辑', MU.q ? '换个关键词试试' : ''); return; }
   body.innerHTML = '<div class="mu-grid al">' + list.map((a, i) =>
     '<button class="mu-card al" data-i="' + i + '">' +
       '<span class="mu-cov"><img loading="lazy" alt="" src="/api/fs/cover?' + q(a.root, a.path) + '" ' +
@@ -5474,7 +5795,7 @@ function muRenderTracks(list) {
   MU.curTracks = list;
   // 全部曲目视图（非下钻）顶部给一行「所有 / 各文件夹」筛选
   const filterBar = (MU.tab === 'tracks' && !MU.artist && !MU.album) ? muFilterBarHTML() : '';
-  if (!list.length) { body.innerHTML = filterBar + muEmpty('没有曲目', MU.q ? '换个关键词试试' : ''); }
+  if (!list.length) { body.innerHTML = filterBar + muEmpty(MU.q ? '没有找到匹配的曲目' : '没有曲目', MU.q ? '换个关键词试试' : ''); }
   else {
     body.innerHTML = filterBar + '<div class="mu-list">' + list.map((t, i) =>
       '<div class="mu-row" data-i="' + i + '" data-play="' + esc(t.root + '|' + t.path) + '">' +
@@ -5599,12 +5920,28 @@ function muRenderPlaylists(list) {
   });
 }
 
-function muRenderPlItems(list) {
+function muAlignPlaylistSwitch() {
+  const box = $('muPlSwitch');
+  if (!box) return;
+  box.classList.toggle('is-overflow', box.scrollWidth > box.clientWidth + 1);
+}
+
+function muRenderPlItems(list, pls) {
   const body = $('muBody');
   const items = list;
   const playable = items.filter((x) => x.exists)
     .map((x) => ({ root: x.root, path: x.path, title: x.title, artist: x.artist, album: x.album }));
-  body.innerHTML =
+  // 顶部歌单切换条：进来默认展开第一个，点 chip 直接换歌单，不用先退回列表页。
+  // 末尾的 ＋ 复用原来的新建入口，低频操作不单独占一行。
+  const sw = (pls && pls.length)
+    ? '<div class="mu-pl-switch" id="muPlSwitch">' +
+        pls.map((p) =>
+          '<button class="mu-pl-chip' + (p.id === MU.plId ? ' on' : '') + '" data-pl="' + p.id +
+          '" title="切到歌单：' + esc(p.name) + '">' + esc(p.name) + '<em>' + p.count + '</em></button>').join('') +
+        '<button class="mu-pl-chip mu-pl-chip-add" id="muPlNew" title="新建歌单">＋</button>' +
+      '</div>'
+    : '';
+  body.innerHTML = sw +
     // 功能在左（用户天天用的），管理在右（低频的），手机放不下时右侧组整体换行靠右
     '<div class="mu-pl-actions">' +
       '<button class="btn sm primary" id="muPlPlayAll">播放全部</button>' +
@@ -5641,6 +5978,30 @@ function muRenderPlItems(list) {
           '</div>').join('') + '</div>'
       : muEmpty('歌单还是空的', '点上面「＋ 加歌」，从曲库里批量挑歌加进来'));
   muMarkPlaying();
+
+  // 歌单少时居中；多到放不下时切换成左起横滑，保证两端都能完整滑到。
+  muAlignPlaylistSwitch();
+  // 顶部歌单 chips：点哪个切哪个。用 muGo 压栈，返回键能退回上一个歌单。
+  body.querySelectorAll('[data-pl]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const id = +b.dataset.pl;
+      if (id === MU.plId) return;
+      const p = (pls || []).find((x) => x.id === id);
+      if (!p) return;
+      muGo({ tab: 'playlists', plId: p.id, plName: p.name });
+    });
+  });
+  // chips 末尾的 ＋：跟原列表页同一个新建接口，建完刷新（新歌单会进 chips）
+  const nb2 = $('muPlNew');
+  if (nb2) nb2.addEventListener('click', () => {
+    askText('新建歌单', '', async (val) => {
+      const r = await api('/api/music/playlist', { name: val });
+      if (r.code !== 0) { toast(r.msg); return false; }
+      toast(r.msg);
+      muLoad();
+      return true;
+    });
+  });
 
   // ---------- 批量管理（多选 → 一次性移出）----------
   // 只在前端攒选择、最后一次性 PUT 整列重写：后端本来就有「整列重写」这一个口子，
@@ -5708,7 +6069,6 @@ function muRenderPlItems(list) {
       if (r.code !== 0) { toast(r.msg); return false; }
       MU.plName = val;
       MU.stack[MU.stack.length - 1].plName = val;
-      $('muBack').hidden = false;
       muLoad();
       return true;
     });
