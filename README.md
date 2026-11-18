@@ -4,7 +4,7 @@
 
 歌和文件全留在自己机器上 —— 不经过任何网盘、不经过任何第三方服务器。
 
-<img src="docs/screenshots/hero.png" alt="躺床上用手机看电脑里的电影">
+<img src="docs/screenshots/remote-access.png" alt="SelfNAS 外网访问架构：家里的电脑通过 Tailscale 或 Cloudflare 让外面的手机访问">
 
 ## v0.21.3 新功能：外网访问
 
@@ -19,6 +19,12 @@
 三种模式都从管理台的「外网访问」进入。Tailscale 和 Cloudflare 客户端已经内置在 SelfNAS 中，NAS 这台机器不需要另外安装软件，也不需要手动配置路由器端口映射。局域网内仍然直接使用局域网 IP，不需要经过外网通道。
 
 > **升级提示：** 如果你需要在手机流量下访问、把文件分享给别人，或者不想再手动配置端口映射，建议升级到 `v0.21.3`。升级后打开管理台的「外网访问」即可选择连接方式。
+
+<img src="docs/screenshots/hero.png" alt="躺床上用手机看电脑里的电影">
+
+<img src="docs/screenshots/remote-access-admin.png" alt="SelfNAS 管理台中的外网访问页面，展示 Tailscale 和 Cloudflare 访问方式">
+
+<sub>架构图解释原理，真实管理台截图证明功能已经内置：在「外网访问」页面选择 Tailscale、Cloudflare 临时地址或 Cloudflare 固定地址。</sub>
 
 <table>
 <tr>
