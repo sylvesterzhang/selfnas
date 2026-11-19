@@ -41,6 +41,15 @@ type Root struct {
 }
 
 // Config 全部配置，落盘为 config.json（原子替换写入）
+type RelayRequestRecord struct {
+	ID        string `json:"id"`
+	Token     string `json:"token,omitempty"`
+	URL       string `json:"url"`
+	Device    string `json:"device"`
+	Status    string `json:"status"`
+	CreatedAt string `json:"createdAt"`
+}
+
 type Config struct {
 	Port              int    `json:"port"`
 	Bind              string `json:"bind"`
@@ -89,6 +98,14 @@ type Config struct {
 	CfAuto bool `json:"cfAuto,omitempty"`
 	// 上一次分到的临时地址。只用来判断「重启后地址变了」，好提醒用户旧地址失效了。
 	CfLastURL string `json:"cfLastUrl,omitempty"`
+	// 自建 Relay：客户端节点连接配置。连接协议走独立 WebSocket，不影响 Tailscale/Cloudflare。
+	RelayEnabled      bool                 `json:"relayEnabled,omitempty"`
+	RelayURL          string               `json:"relayUrl,omitempty"`
+	RelayNodeID       string               `json:"relayNodeId,omitempty"`
+	RelayNodeToken    string               `json:"relayNodeToken,omitempty"`
+	RelayRequestID    string               `json:"relayRequestId,omitempty"`
+	RelayRequestToken string               `json:"relayRequestToken,omitempty"`
+	RelayRequests     []RelayRequestRecord `json:"relayRequests,omitempty"`
 }
 
 // DriveInfo 系统盘符信息（仅用于展示与首次生成默认配置）
@@ -229,6 +246,11 @@ func main() {
 	// 外网访问（Cloudflare）：上次开着就重启。quick 模式会拿到**新地址**（CF 的规则），
 	// 前端靠 prevUrl/changed 提示用户「发出去的旧地址已经失效」。
 	go cfAutoStart()
+	// RelayEnabled 同时表示“用户允许自动恢复”：点断开会写 false，
+	// 所以用户主动断开后重启不会偷偷重连；只有恢复连接才会重新写 true。
+	if cfg.RelayEnabled {
+		go relayStart(cfg.RelayURL, cfg.RelayNodeID, cfg.RelayNodeToken)
+	}
 
 	// Ctrl+C / SIGTERM 时先停 HTTP、再关库（defer closeDB 会做 checkpoint）。
 	//
@@ -898,6 +920,15 @@ func routes() http.Handler {
 	mux.HandleFunc("/api/tunnel/cf/status", guard(handleCfStatus))
 	mux.HandleFunc("/api/tunnel/cf/start", guard(handleCfStart))
 	mux.HandleFunc("/api/tunnel/cf/stop", guard(handleCfStop))
+	// 自建 Relay：节点连接和外部转发由独立服务端承载。
+	mux.HandleFunc("/api/relay/status", guard(handleRelayStatus))
+	mux.HandleFunc("/api/relay/apply", guard(handleRelayApply))
+	mux.HandleFunc("/api/relay/check", guard(handleRelayCheck))
+	mux.HandleFunc("/api/relay/delete", guard(handleRelayDelete))
+	mux.HandleFunc("/api/relay/start", guard(handleRelayStart))
+	mux.HandleFunc("/api/relay/stop", guard(handleRelayStop))
+	mux.HandleFunc("/api/relay/resume", guard(handleRelayResume))
+	mux.HandleFunc("/api/relay/clear", guard(handleRelayClear))
 	mux.HandleFunc("/api/logs/tail", guard(handleLogTail))
 	mux.HandleFunc("/api/logs/transfers", guard(handleTransferList))
 

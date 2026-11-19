@@ -1392,6 +1392,153 @@ function renderTsOnline(box, d) {
   $('tsDown').onclick = tsTurnOff;
 }
 
+async function loadRelay() {
+  const box = $('relayBox'); if (!box) return;
+  const r = await api('/api/relay/status');
+  if (r.code !== 0) { box.innerHTML = '<p class="err">' + esc(r.msg || '读取状态失败') + '</p>'; return; }
+  const d = r.data || {}; netDot('dotRelay', d.state === 'online');
+  const requests = Array.isArray(d.requests) ? d.requests : [];
+  const statusText = (s) => ({pending: '等待审批', approved: '已批准', rejected: '已拒绝 · 失败', expired: '已过期 · 失败', missing: '服务端无记录 · 失败'}[s] || s || '未知');
+  const statusClass = (s) => s === 'pending' ? 'warn' : s === 'approved' ? 'ok' : 'error';
+  const online = d.state === 'online';
+  const hasNode = d.has_node !== undefined ? !!d.has_node : !!(d.url && d.node_id);
+  const autoConnect = d.auto_connect !== undefined ? !!d.auto_connect : !!d.enabled;
+  const accessURL = d.access_url || ((d.url || '').replace(/\/$/, '') + '/n/' + (d.node_id || '') + '/files');
+
+  const bindCopy = () => {
+    if (!$('relayCopy')) return;
+    $('relayCopy').onclick = async () => {
+      const text = $('relayAccessURL').textContent;
+      if (navigator.clipboard && window.isSecureContext) {
+        try { await navigator.clipboard.writeText(text); toast('完整访问地址已复制'); return; } catch (e) {}
+      }
+      if (legacyCopy(text)) { toast('完整访问地址已复制'); return; }
+      selectNodeText($('relayAccessURL')); toast('已选中地址，请按 Ctrl+C 复制');
+    };
+  };
+  const actionError = (msg) => { if ($('relayErr')) $('relayErr').textContent = msg || '操作失败'; };
+
+  // 已有节点凭证：只显示连接状态，不再显示地址/设备名/提交申请/申请表。
+  // 断开后凭证仍在，但 autoConnect=false，重启不会重连；清除后才回到申请流程。
+  if (hasNode) {
+    let title, lead, dot, buttons;
+    if (!autoConnect) {
+      title = '自建 Relay 已断开';
+      lead = '本机保留了连接信息，但程序重启后不会自动恢复。需要时点“恢复连接”。';
+      dot = 'off';
+      buttons = '<button class="btn primary" id="relayResume">恢复连接</button>'
+        + '<button class="btn sm danger" id="relayClear">删除本机连接</button>';
+    } else if (online) {
+      title = '自建 Relay 已连接';
+      lead = '节点正在保持长连接。外部访问地址：';
+      dot = 'on';
+      buttons = '<button class="btn sm danger" id="relayStop">断开连接</button>'
+        + '<button class="btn sm danger-ghost" id="relayClear">删除本机连接</button>';
+    } else {
+      title = d.state === 'error' ? '自建 Relay 连接异常，正在重试' : '自建 Relay 正在连接';
+      lead = '已启用自动恢复，连接稳定后即可使用。外部访问地址：';
+      dot = 'warn';
+      buttons = '<button class="btn sm danger" id="relayStop">断开连接</button>'
+        + '<button class="btn sm danger-ghost" id="relayClear">删除本机连接</button>';
+    }
+    box.innerHTML = '<div class="cf-pane relay-connected-pane">'
+      + '<div class="ts-head"><span class="ts-dot ' + dot + '"></span><b>' + title + '</b></div>'
+      + '<p class="muted">' + lead + '</p>'
+      + '<div class="cmd-row"><code id="relayAccessURL">' + esc(accessURL) + '</code><button class="btn sm" id="relayCopy">复制地址</button></div>'
+      + '<div style="margin-top:12px">' + buttons + '</div>'
+      + '<p class="hint">“断开连接”只停止连接并关闭自动恢复；“删除本机连接”才会清除地址、节点凭证和申请记录。两者都不会自动撤销 Relay 服务端节点。</p>'
+      + '<div class="err" id="relayErr"></div></div>';
+    bindCopy();
+    if ($('relayStop')) $('relayStop').onclick = async () => {
+      const btn = $('relayStop'); btn.disabled = true;
+      const rr = await api('/api/relay/stop', {});
+      if (rr.code !== 0) { actionError(rr.msg); btn.disabled = false; return; }
+      toast('已断开，重启后不会自动恢复'); loadRelay();
+    };
+    if ($('relayResume')) $('relayResume').onclick = async () => {
+      const btn = $('relayResume'); btn.disabled = true; btn.textContent = '正在恢复…';
+      const rr = await api('/api/relay/resume', {});
+      if (rr.code !== 0) { actionError(rr.msg); btn.disabled = false; btn.textContent = '恢复连接'; return; }
+      toast('已恢复连接，并已恢复重启自动连接'); loadRelay();
+    };
+    if ($('relayClear')) $('relayClear').onclick = async () => {
+      if (!confirm('确定删除本机保存的 Relay 地址、节点凭证和申请记录？Relay 服务端节点不会自动撤销。')) return;
+      const btn = $('relayClear'); btn.disabled = true;
+      const rr = await api('/api/relay/clear', {});
+      if (rr.code !== 0) { actionError(rr.msg); btn.disabled = false; return; }
+      toast('已删除本机 Relay 连接与申请记录'); loadRelay();
+    };
+    return;
+  }
+
+  // 没有节点凭证：有 pending 就只展示申请记录；没有才显示申请表单。
+  const hasPending = requests.some((item) => item.status === 'pending');
+  const requestRows = requests.map((item) => {
+    const pending = item.status === 'pending';
+    return '<tr><td class="mono">' + esc(item.created_at || '-') + '</td>'
+      + '<td><b>' + esc(item.device || '未命名设备') + '</b><small class="relay-request-id">申请 ID：' + esc(item.id || '') + '</small></td>'
+      + '<td class="relay-request-url" title="' + esc(item.url || '') + '">' + esc(item.url || '-') + '</td>'
+      + '<td><span class="tag ' + statusClass(item.status) + '">' + esc(statusText(item.status)) + '</span></td>'
+      + '<td class="relay-actions"><button class="btn sm ghost relay-check-one" data-request-id="' + esc(item.id || '') + '" ' + (pending ? '' : 'disabled title="该申请已处理，无需再次检查"') + '>检查结果</button>'
+      + '<button class="btn sm danger relay-delete-one" data-request-id="' + esc(item.id || '') + '">删除</button></td></tr>';
+  }).join('') || '<tr><td colspan="5" class="empty">还没有接入申请。</td></tr>';
+  const applyForm = hasPending
+    ? '<p class="hint">已有一条待审批申请，请直接检查结果；处理完成或删除后，才能提交新的申请。</p>'
+    : '<div class="field" style="max-width:520px"><label>Relay 地址</label><input id="relayURL" placeholder="https://relay.example.com" value="' + esc(d.url || '') + '"></div>'
+      + '<div class="field" style="max-width:520px"><label>设备名称</label><input id="relayDevice" value="SelfNAS"></div>'
+      + '<div style="margin-top:12px"><button class="btn primary" id="relayApply">提交接入申请</button></div>';
+  // 还没装服务端时，先给出下载 + 安装引导；下载按钮直接可见，安装步骤折叠展开。
+  const setupGuide = '<div class="relay-setup-guide">'
+    + '<div class="relay-setup-head">还没有 Relay 服务端？先在这里下载安装</div>'
+    + '<p class="relay-setup-intro">自建中转要你自己在<b>一台有公网 IP 的服务器</b>上跑一个 relay 服务端；这台 NAS 只是去申请接入。服务端是单个可执行文件，Windows / Linux 都有。</p>'
+    + '<div class="relay-downloads">'
+    + '<a class="btn sm primary" href="https://github.com/sylvesterzhang/selfnas-relay/releases/latest" target="_blank" rel="noopener">前往下载服务端（最新版）↗</a>'
+    + '</div>'
+    + '<details class="relay-install"><summary>服务端怎么装？（点开看 5 步）</summary>'
+    + '<ol>'
+    + '<li>点上面的按钮进入最新版下载页，按你的服务器系统选对应平台的 zip（Windows 选 windows-amd64，Linux 选 linux-amd64）下载并解压，得到单个可执行文件。</li>'
+    + '<li>（可选）把包里的 <code>env.example</code> 复制为 <code>.env</code>，按需改监听端口，默认 <code>8080</code>。</li>'
+    + '<li>启动：Windows 双击 <code>relay.exe</code>；Linux 执行 <code>chmod +x relay &amp;&amp; ./relay</code>。</li>'
+    + '<li>在<b>服务器本机</b>浏览器打开 <code>http://127.0.0.1:8080/</code>，首次会让你设置管理员密码（无默认密码，只能本机初始化）。</li>'
+    + '<li>装好后，把服务端的对外地址 <code>http(s)://你的服务器IP:端口</code> 填到下面的「Relay 地址」，提交申请，再去服务端管理台批准即可。</li>'
+    + '</ol>'
+    + '<p class="hint">想用域名 + HTTPS，可以在服务端前面套一层 Nginx / Caddy 反向代理；对外只需放行服务端端口。</p>'
+    + '</details></div>';
+  box.innerHTML = '<div class="cf-pane"><p class="cf-lead">一台 SelfNAS 只连接一台自建 Relay。申请通过并连接后，这里只显示当前连接状态和访问地址。</p>'
+    + setupGuide
+    + applyForm
+    + '<div class="err" id="relayErr"></div>'
+    + '<div class="relay-request-section"><b>我的接入申请</b><div class="relay-request-table-wrap"><table class="relay-request-table"><thead><tr><th>提交时间</th><th>设备 / 申请 ID</th><th>Relay 地址</th><th>状态</th><th>操作</th></tr></thead><tbody>' + requestRows + '</tbody></table></div></div>'
+    + '<p class="hint">检查结果只更新对应申请的状态：服务端拒绝或查无记录会标记为失败；只有服务端确认记录仍存在且为待审批，才显示等待审批。删除只清理本机记录。</p></div>';
+  if ($('relayApply')) $('relayApply').onclick = async () => {
+    const rr = await api('/api/relay/apply', { url: ($('relayURL').value || '').trim(), deviceName: ($('relayDevice').value || 'SelfNAS').trim(), hostname: location.hostname, platform: navigator.platform, version: stateData && stateData.version || '' });
+    if (rr.code !== 0) actionError(rr.msg); else { toast('申请已提交，等待 Relay 管理员审批'); loadRelay(); }
+  };
+  document.querySelectorAll('.relay-check-one:not(:disabled)').forEach((btn) => {
+    btn.onclick = async () => {
+      btn.disabled = true; btn.textContent = '正在查询…';
+      const rr = await api('/api/relay/check', { requestId: btn.dataset.requestId });
+      if (rr.code !== 0) { actionError(rr.msg); btn.disabled = false; btn.textContent = '检查结果'; return; }
+      // 业务结果不在表单下方展示：重新拉取状态，把结果落到对应申请行；
+      // approved 时会切到连接态。这里只做轻提示。
+      const st = (rr.data || {}).status;
+      toast(st === 'pending' ? '该申请仍在等待审批，状态已更新' : st === 'approved' ? '服务端已批准，正在连接' : '状态已更新：' + statusText(st));
+      loadRelay();
+    };
+  });
+  document.querySelectorAll('.relay-delete-one').forEach((btn) => {
+    btn.onclick = async () => {
+      const row = btn.closest('tr');
+      const label = row && row.children[1] ? row.children[1].innerText.split('申请 ID：')[0].trim() : '这条申请';
+      if (!confirm('从本机列表删除“' + label + '”的申请记录？这不会删除或撤销 Relay 服务端记录/节点。')) return;
+      btn.disabled = true;
+      const rr = await api('/api/relay/delete', { requestId: btn.dataset.requestId });
+      if (rr.code !== 0) { actionError(rr.msg); btn.disabled = false; }
+      else { toast('已删除本机申请记录'); loadRelay(); }
+    };
+  });
+}
+
 // ---------- 外网访问（Cloudflare Tunnel） ----------
 // 两种模式：quick = 免注册临时地址（进程重启会换），named = 用户自己的域名 + 隧道 token。
 // 文案上必须把「重启会变」这件事说死——用户最容易被这个坑到，见 renderCfOff 的 cf-warn。
@@ -1412,13 +1559,15 @@ function cfPoll(ms) {
 // 外层三个 tab：quick / named / ts。cfMode 由 tab 决定，不再自己猜。
 // 默认停在「临时地址」（2026-11-17 用户定：按国内真实体验，CF 零门槛且在外面真的好用）。
 function netSetTab(t) {
-  if (t !== 'quick' && t !== 'named' && t !== 'ts') t = 'quick';
+  if (t !== 'quick' && t !== 'named' && t !== 'ts' && t !== 'relay') t = 'quick';
   netTab = t;
   try { localStorage.setItem('netTab', t); } catch (e) {}
   document.querySelectorAll('.net-tab').forEach((b) => b.classList.toggle('on', b.dataset.net === t));
-  $('pane-cf').classList.toggle('on', t !== 'ts');
+  $('pane-cf').classList.toggle('on', t !== 'ts' && t !== 'relay');
   $('pane-ts').classList.toggle('on', t === 'ts');
+  $('pane-relay').classList.toggle('on', t === 'relay');
   if (t === 'ts') { loadTunnel(); return; }
+  if (t === 'relay') { loadRelay(); return; }
   cfMode = t;
   loadCf();
 }
@@ -1436,7 +1585,7 @@ function netDot(id, on) {
 async function openNet() {
   let t = 'quick';
   try { t = localStorage.getItem('netTab') || 'quick'; } catch (e) {}
-  const [rc, rt] = await Promise.all([api('/api/tunnel/cf/status'), api('/api/tunnel/status')]);
+  const [rc, rt, rr] = await Promise.all([api('/api/tunnel/cf/status'), api('/api/tunnel/status'), api('/api/relay/status')]);
   let cfBusy = false;
   if (rc.code === 0) {
     const d = rc.data || {};
@@ -1446,6 +1595,7 @@ async function openNet() {
     if (cfBusy && d.mode) t = d.mode;
   }
   if (rt.code === 0) netDot('dotTs', (rt.data || {}).state === 'running');
+  if (rr.code === 0) netDot('dotRelay', (rr.data || {}).state === 'online');
   netSetTab(t);
 }
 

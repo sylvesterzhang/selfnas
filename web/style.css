@@ -336,6 +336,7 @@ button.btn, .btn {
 .tag.ok { background: var(--ok-soft); color: var(--ok); border: 1px solid var(--ok-line); }
 .tag.off { background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); }
 .tag.warn { background: var(--warn-soft); color: var(--warn); border: 1px solid var(--warn); }
+.tag.error { background: var(--danger-soft); color: var(--danger); border: 1px solid var(--danger); }
 
 .field { margin-bottom: 14px; }
 .field label { display: block; font-size: 12px; color: var(--text-2); margin-bottom: 5px; }
@@ -2607,3 +2608,32 @@ body.mini-on { padding-bottom: 58px; }
   .net-tabs { flex-direction: column; }
   .cf-pane { padding: 14px; }
 }
+
+/* 自建 Relay 服务端下载 + 安装引导（未连接态，申请表单上方） */
+.relay-setup-guide {
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 13px 15px; margin: 0 0 18px;
+}
+.relay-setup-head { font-size: 13.5px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+.relay-setup-intro { margin: 0 0 11px; font-size: 12.5px; line-height: 1.7; color: var(--text-2); }
+.relay-setup-intro b { color: var(--text); }
+.relay-downloads { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+.relay-downloads .btn { text-decoration: none; display: inline-block; }
+.relay-install { margin-top: 8px; }
+.relay-install summary { cursor: pointer; font-size: 12.5px; color: var(--accent); }
+.relay-install ol { margin: 10px 0 0; padding-left: 20px; font-size: 12.5px; line-height: 1.85; color: var(--text-2); }
+.relay-install ol li { margin-bottom: 2px; }
+.relay-install code { font-size: 12px; }
+.relay-install b { color: var(--text); }
+
+.relay-request-section { margin-top: 18px; }
+.relay-request-section > b { display: block; margin-bottom: 9px; }
+.relay-request-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.relay-request-table { min-width: 720px; border: 0; border-radius: 0; }
+.relay-request-table th, .relay-request-table td { padding: 10px 12px; vertical-align: middle; }
+.relay-request-table small { display: block; margin-top: 4px; color: var(--text-3); font-size: 11px; }
+.relay-request-table .relay-request-url { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.relay-request-table .relay-actions { white-space: nowrap; }
+.relay-request-table .relay-actions .btn + .btn { margin-left: 5px; }
+.relay-request-table button:disabled { opacity: .45; cursor: not-allowed; }
+.relay-request-table .tag { white-space: nowrap; }

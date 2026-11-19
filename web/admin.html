@@ -162,6 +162,10 @@
           <span class="net-tab-t">Tailscale<span class="net-badge ghost">自己用</span><i class="net-dot" id="dotTs" title="运行中"></i></span>
           <small>固定地址 + 加密 · 直连看网络条件</small>
         </button>
+        <button class="net-tab" data-net="relay" role="tab">
+          <span class="net-tab-t">自建中转<span class="net-badge ghost">进阶</span><i class="net-dot" id="dotRelay" title="运行中"></i></span>
+          <small>自己的 Relay · 适合稳定转发</small>
+        </button>
       </div>
 
       <div class="net-pane on" id="pane-cf">
@@ -169,6 +173,9 @@
       </div>
       <div class="net-pane" id="pane-ts">
         <div id="tsBox"><p class="hint">正在读取状态…</p></div>
+      </div>
+      <div class="net-pane" id="pane-relay">
+        <div id="relayBox"><p class="hint">正在读取状态…</p></div>
       </div>
     </section>
 
