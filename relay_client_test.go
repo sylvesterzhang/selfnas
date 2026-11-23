@@ -24,6 +24,64 @@ func TestRelayURL(t *testing.T) {
 	}
 }
 
+func TestRelayClientBodyDoesNotBlockFollowingRequests(t *testing.T) {
+	oldHandler := mainHandler
+	defer func() { mainHandler = oldHandler; relayStop() }()
+	mainHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			// Simulate middleware/handler returning without consuming the body.
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte("following-request-ok"))
+	})
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	got := make(chan bool, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		frames := []relayFrame{
+			{Type: "request_start", ID: "post-1", Method: http.MethodPost, Path: "/ignored-body"},
+			{Type: "request_body", ID: "post-1", Data: base64.StdEncoding.EncodeToString([]byte("body-that-handler-does-not-read"))},
+			{Type: "request_end", ID: "post-1"},
+			{Type: "request_start", ID: "get-2", Method: http.MethodGet, Path: "/next"},
+			{Type: "request_end", ID: "get-2"},
+		}
+		for _, f := range frames {
+			b, _ := json.Marshal(f)
+			if err := c.WriteMessage(websocket.TextMessage, b); err != nil {
+				got <- false
+				return
+			}
+		}
+		for {
+			_, payload, err := c.ReadMessage()
+			if err != nil {
+				got <- false
+				return
+			}
+			var f relayFrame
+			if json.Unmarshal(payload, &f) == nil && f.ID == "get-2" && f.Type == "response_end" {
+				got <- true
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+	relayStart(srv.URL, "node-test", "token-test")
+	select {
+	case ok := <-got:
+		if !ok {
+			t.Fatal("websocket closed before following request completed")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("body from an unread request blocked the next websocket request")
+	}
+}
+
 func TestRelayClientServesRequestFrame(t *testing.T) {
 	oldHandler := mainHandler
 	defer func() { mainHandler = oldHandler; relayStop() }()

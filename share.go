@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -29,7 +30,8 @@ func signPath(full string, size int64, exp int64) string {
 	return hex.EncodeToString(m.Sum(nil))
 }
 
-// handleFSLink 生成一条给外部播放器用的直链（绝对地址，因为 App 只知道这个 URL）。
+// handleFSLink 生成一条给外部播放器用的短期签名直链。
+// 返回相对路径，避免把客户端内部 Host 带到公网；浏览器需要绝对地址时再基于当前页面补全。
 func handleFSLink(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	full, _, err := resolveFor(webUserOf(r), q.Get("root"), q.Get("path"))
@@ -44,16 +46,17 @@ func handleFSLink(w http.ResponseWriter, r *http.Request) {
 	}
 	exp := time.Now().Add(linkTTL).Unix()
 	sig := signPath(full, st.Size(), exp)
-	// 用请求里看到的 host 拼绝对地址：手机访问 192.168.x.x 时，App 也得能连到同一个地址
-	host := r.Host
-	scheme := "http"
-	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-		scheme = "https"
-	}
-	u := scheme + "://" + host + "/f?p=" + hex.EncodeToString([]byte(full)) +
-		"&s=" + strconv.FormatInt(st.Size(), 10) + "&e=" + strconv.FormatInt(exp, 10) + "&g=" + sig
+	// 只返回相对签名路径，不把客户端内部的 selfnas.local / 局域网 Host
+	// 泄漏给浏览器或 iPhone。前端会根据当前页面地址补上实际公网 Relay 前缀。
+	v := url.Values{}
+	v.Set("p", hex.EncodeToString([]byte(full)))
+	v.Set("s", strconv.FormatInt(st.Size(), 10))
+	v.Set("e", strconv.FormatInt(exp, 10))
+	v.Set("g", sig)
+	signedPath := "/f?" + v.Encode()
 	writeJSON(w, 0, "", map[string]any{
-		"url":    u,
+		"url":    signedPath,
+		"path":   signedPath,
 		"name":   filepath.Base(full),
 		"size":   st.Size(),
 		"expire": exp,

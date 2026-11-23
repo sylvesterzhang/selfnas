@@ -25,8 +25,29 @@ type relayClientState struct {
 }
 
 type relayRequestState struct {
-	body *io.PipeWriter
-	req  *http.Request
+	body      *io.PipeWriter
+	req       *http.Request
+	bodyQueue chan []byte
+	bodyStop  chan struct{}
+	stopOnce  sync.Once
+}
+
+func (s *relayRequestState) stopBody() {
+	s.stopOnce.Do(func() { close(s.bodyStop) })
+}
+
+func (s *relayRequestState) enqueueBody(data []byte) bool {
+	select {
+	case <-s.bodyStop:
+		return false
+	default:
+	}
+	select {
+	case s.bodyQueue <- data:
+		return true
+	default:
+		return false
+	}
 }
 
 type relayFrame struct {
@@ -205,10 +226,17 @@ func relayServeConn(stop chan struct{}, conn *websocket.Conn) error {
 					req.Header.Add(k, v)
 				}
 			}
+			st := &relayRequestState{
+				body:      pw,
+				req:       req,
+				bodyQueue: make(chan []byte, 16),
+				bodyStop:  make(chan struct{}),
+			}
 			mu.Lock()
-			requests[f.ID] = &relayRequestState{body: pw, req: req}
+			requests[f.ID] = st
 			mu.Unlock()
-			go relayServeRequest(stop, conn, f.ID, req, &mu, requests)
+			go relayPumpRequestBody(st)
+			go relayServeRequest(stop, conn, f.ID, req, st, &mu, requests)
 		case "request_body":
 			mu.Lock()
 			st := requests[f.ID]
@@ -216,25 +244,51 @@ func relayServeConn(stop chan struct{}, conn *websocket.Conn) error {
 			if st != nil {
 				b, e := base64.StdEncoding.DecodeString(f.Data)
 				if e != nil {
+					st.stopBody()
 					_ = st.body.CloseWithError(e)
-				} else {
-					_, _ = st.body.Write(b)
+				} else if !st.enqueueBody(b) {
+					// 单个慢请求不能卡住 WebSocket 唯一的读循环；超过有界缓冲就中止该请求。
+					st.stopBody()
+					_ = st.body.CloseWithError(io.ErrShortWrite)
 				}
 			}
 		case "request_end":
 			mu.Lock()
 			st := requests[f.ID]
 			mu.Unlock()
-			if st != nil {
-				_ = st.body.Close()
+			if st != nil && !st.enqueueBody(nil) {
+				st.stopBody()
+				_ = st.body.CloseWithError(io.ErrShortWrite)
 			}
 		}
 	}
 }
 
-func relayServeRequest(stop chan struct{}, conn *websocket.Conn, id string, req *http.Request, mu *sync.Mutex, requests map[string]*relayRequestState) {
+func relayPumpRequestBody(st *relayRequestState) {
+	for {
+		select {
+		case <-st.bodyStop:
+			_ = st.body.CloseWithError(io.ErrClosedPipe)
+			return
+		case data := <-st.bodyQueue:
+			if data == nil {
+				_ = st.body.Close()
+				return
+			}
+			if _, err := st.body.Write(data); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func relayServeRequest(stop chan struct{}, conn *websocket.Conn, id string, req *http.Request, st *relayRequestState, mu *sync.Mutex, requests map[string]*relayRequestState) {
 	w := &relayResponseWriter{conn: conn, id: id, client: &relayClient}
 	mainHandler.ServeHTTP(w, req)
+	// A handler may return without consuming the entire request body. Close the
+	// pipe reader so its body pump cannot block and stall every other WS request.
+	_ = req.Body.Close()
+	st.stopBody()
 	_ = w.finish()
 	mu.Lock()
 	delete(requests, id)

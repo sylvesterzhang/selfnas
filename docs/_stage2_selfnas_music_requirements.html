@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="docx-page-size" content="A4">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SelfNAS 音乐播放器与移动端体验需求规范</title>
+<style>
+:root {
+  --fs-cover-title: 32pt; --fs-h1: 20pt; --fs-h2: 15pt; --fs-h3: 12pt; --fs-body: 12pt; --fs-small: 10pt;
+  --ff-heading: "Microsoft YaHei", "微软雅黑", sans-serif; --ff-body: "Microsoft YaHei", "微软雅黑", sans-serif; --ff-mono: Consolas, monospace;
+  --color-primary: #245B83; --color-text: #263442; --color-muted: #657587; --color-border: #D8E1E8; --color-bg: #F2F6F9; --color-highlight: #287A78;
+  --spacing-paragraph: 0.65em; --spacing-section: 1.7em; --spacing-block: 1em; --margin-page: 2.4cm; --page-content-width: 16.2cm;
+  --lh-body: 1.55; --lh-heading: 1.25; --fw-bold: 700; --fw-normal: 400;
+}
+@page { margin: 2.4cm 2.4cm 2.2cm; @bottom-center { content: counter(page); } }
+html { color: var(--color-text); }
+body { max-width: var(--page-content-width); margin-left: auto; margin-right: auto; font-family: var(--ff-body); font-size: var(--fs-body); line-height: var(--lh-body); }
+section[role="cover"] { page: cover; }
+@page cover { @bottom-center { content: none; } }
+section[role="body"] { page: body; }
+@page body { @bottom-center { content: counter(page); } }
+p { font-family: var(--ff-body); font-size: var(--fs-body); line-height: var(--lh-body); text-indent: 2em; margin: 0 0 var(--spacing-paragraph); text-align: left; }
+li { font-family: var(--ff-body); font-size: var(--fs-body); line-height: var(--lh-body); margin-bottom: 0.3em; }
+h1 { font-family: var(--ff-heading); font-size: var(--fs-h1); line-height: var(--lh-heading); color: var(--color-primary); font-weight: var(--fw-bold); margin: var(--spacing-section) 0 var(--spacing-block); text-align: left; }
+h2 { font-family: var(--ff-heading); font-size: var(--fs-h2); line-height: var(--lh-heading); color: var(--color-primary); font-weight: var(--fw-bold); margin: 1.25em 0 0.55em; text-align: left; }
+h3 { font-family: var(--ff-heading); font-size: var(--fs-h3); line-height: var(--lh-heading); color: var(--color-text); font-weight: var(--fw-bold); margin: 1em 0 0.45em; text-align: left; }
+.cover-title { text-align: center; text-indent: 0; font-family: var(--ff-heading); font-size: var(--fs-cover-title); line-height: var(--lh-heading); color: var(--color-primary); font-weight: var(--fw-bold); margin-top: 5cm; }
+.cover-subtitle { text-align: center; text-indent: 0; color: var(--color-muted); font-size: var(--fs-h2); }
+.toc-title { text-align: center; text-indent: 0; font-family: var(--ff-heading); font-size: var(--fs-h1); font-weight: var(--fw-bold); color: var(--color-primary); }
+.toc-list, .toc-list ol, .toc-list ul { list-style: none; padding-left: 1.2em; }
+.toc-list { padding-left: 0; }
+.toc-list a { color: var(--color-text); text-decoration: none; }
+table { width: 100%; border-collapse: collapse; margin: 0.7em 0 1em; font-size: var(--fs-body); }
+caption { text-align: left; font-weight: var(--fw-bold); color: var(--color-muted); margin-bottom: 0.35em; }
+th, td { border: 1px solid var(--color-border); padding: 0.45em 0.55em; text-align: left; vertical-align: top; }
+th { background: var(--color-bg); color: var(--color-primary); font-weight: var(--fw-bold); }
+code { font-family: var(--ff-mono); font-size: var(--fs-small); color: var(--color-highlight); }
+strong { font-weight: var(--fw-bold); }
+</style>
+</head>
+<body>
+<section role="cover">
+<p class="cover-title">SelfNAS 音乐播放器与移动端体验需求规范</p>
+<p class="cover-subtitle">产品 / 技术需求文档</p>
+</section>
+<section role="cover">
+<nav class="doc-toc" aria-label="文档目录">
+<p class="toc-title">目录</p>
+<ol class="toc-list">
+<li><a href="#section-1">1. 背景与问题</a></li><li><a href="#section-2">2. 产品目标</a></li><li><a href="#section-3">3. 音乐库分页与增量加载</a></li><li><a href="#section-4">4. 文件夹筛选</a></li><li><a href="#section-5">5. 歌单页面</a></li><li><a href="#section-6">6. 视觉规范</a></li><li><a href="#section-7">7. 默认封面</a></li><li><a href="#section-8">8. Relay 公网封面链路</a></li><li><a href="#section-9">9. iPhone 锁屏媒体控制</a></li><li><a href="#section-10">10. 技术约束</a></li><li><a href="#section-11">11. 验收标准</a></li><li><a href="#section-12">12. 已知风险与后续维护规则</a><ol><li><a href="#section-12-1">12.1 已知风险</a></li><li><a href="#section-12-2">12.2 维护规则</a></li></ol></li>
+</ol>
+</nav>
+</section>
+<section role="body" data-page-restart="1">
+<h1 id="section-1">1. 背景与问题</h1>
+<p>SelfNAS 面向个人 NAS 音乐管理与播放，曲库可能从数百首增长到数万首。移动端主要问题是全量加载慢且占用资源、目录筛选不便、歌单与封面体验不统一，以及 Relay 公网、手机缓存和 iPhone 锁屏下的访问与控制不稳定。</p>
+<p>项目名称统一为 <strong>SelfNAS</strong>，不是 Selfless。无封面、锁屏控制、动态公网地址和脚本缓存刷新是本轮必须固定的事实。</p>
+<h1 id="section-2">2. 产品目标</h1>
+<ol><li>让音乐库首屏快速可用，并通过分页、懒加载和增量加载支持大曲库。</li><li>让用户按文件夹快速定位歌曲，筛选、搜索、排序和分页组合时结果可预测。</li><li>提供清晰的歌单页，支持查看、播放单曲及播放全部。</li><li>在本地网络、Relay 公网和 iPhone 锁屏下保持歌曲、封面、播放队列和控制状态一致。</li><li>通过统一视觉与默认封面强化 SelfNAS 品牌识别。</li></ol>
+<h1 id="section-3">3. 音乐库分页与增量加载</h1>
+<p>接口采用稳定分页模型，可使用 <code>page</code>/<code>pageSize</code> 或 <code>cursor</code>/<code>limit</code>。响应至少包含 <code>items</code>、<code>hasMore</code>；游标模式增加 <code>nextCursor</code>，<code>total</code> 可选。排序必须稳定：主字段相同时，以歌曲唯一 ID 或规范化路径作二级排序。</p>
+<p>首屏只请求填满视口并带少量预加载余量的数据，不等待全量曲库。接近底部时触发下一批请求，推荐使用列表底部观察器。追加加载保留已有内容，失败时可重试。同一条件和页码/游标不得并发请求。筛选、搜索或排序改变后取消无效请求并建立新上下文，禁止混入旧结果。</p>
+<p>本轮通过 <code>files.html</code> 给 <code>files.js</code> 增加查询参数，强制刷新手机缓存。每次脚本行为发布都要递增版本参数，并在真机验证请求 URL 已变化。</p>
+<h1 id="section-4">4. 文件夹筛选</h1>
+<p>音乐库入口默认显示“全部文件夹”，筛选面板支持展开、收起和选中态。层级较深时显示当前路径；入口可显示摘要，例如“摇滚 / 128 首”。空文件夹显示空状态和返回上级操作，读取失败需区分网络、权限和目录不存在。</p>
+<p>筛选条件至少包括 <code>folderId</code>、<code>keyword</code>、<code>sort</code> 和 <code>page/cursor</code>。切换文件夹必须重置分页，从第一页或新游标加载。文件夹筛选应与搜索、排序、分页组合工作。进入歌单或播放器后返回，页面生命周期内可保留条件，但是否跨应用恢复待后续确定。</p>
+<h1 id="section-5">5. 歌单页面</h1>
+<p>歌单页包含标题、描述、歌曲数量、封面、播放全部按钮和歌曲列表。首屏优先展示标题与播放入口，列表行高、封面尺寸、加载态应与音乐库一致。</p>
+<ul><li><strong>播放全部：</strong>按歌单顺序建立队列，从第一首播放。</li><li><strong>播放单曲：</strong>以当前歌曲为起点，按产品定义继续播放剩余歌曲。</li><li><strong>异常歌曲：</strong>歌曲不存在或无权限时标记不可播放，不得让整个歌单失败。</li><li><strong>交互区域：</strong>点击整行播放；更多操作按钮独立处理，避免误触。</li></ul>
+<p>歌单排序必须稳定；若支持手动排序，应明确保存顺序、并发编辑和回滚规则。</p>
+<h1 id="section-6">6. 视觉规范</h1>
+<p>默认采用可靠、克制的播放器风格，优先保证可读性和播放状态识别。背景、卡片和浮层分层；歌曲名、艺人、辅助信息建立字号层级，歌曲名最多两行。播放中状态不能只依赖颜色，应同时使用图标或文字。</p>
+<p>封面统一正方形并懒加载；失败和无封面使用一致降级。底部播放条不得遮挡列表末项，交互需适配安全区、横竖屏和不同 iPhone 尺寸。</p>
+<h1 id="section-7">7. 默认封面</h1>
+<p>无封面默认图必须同时使用 <strong>黑胶、官方 SelfNAS 图标和完整 SelfNAS 字标</strong>，不得出现 Selfless，也不得只显示一个过小图标。SelfNAS 图标需要足够大，保证在列表缩略图、歌单头图和播放器大图中仍清晰可识别；完整字标不得裁切、变形或被背景吞没。</p>
+<p>应提供列表缩略图和播放器/歌单大图两种尺寸。资源需有稳定版本路径，允许缓存但能通过版本更新；资源加载失败时应有本地基础降级，不显示破图图标。</p>
+<h1 id="section-8">8. Relay 公网封面链路</h1>
+<p>公网客户端不应假定能直接访问内网文件。客户端请求歌曲元数据后，服务端根据当前 Relay 配置、资源路径、用户权限和过期时间生成短期签名 URL，再返回给客户端。客户端只消费 URL，不自行拼接签名参数；长期密钥不得下发浏览器。</p>
+<p>签名地址必须动态生成，<strong>不能写死 <code>selfnas.local</code>、固定节点 ID 或固定域名</strong>。本地和公网应共用同一封面字段协议。URL 过期或返回 401/403 时，客户端重新获取；其他失败回退到默认封面。日志可记录资源 ID、访问模式和状态码，但不得记录完整签名。</p>
+<p>推荐链路：客户端请求 → 服务端确认资源 → Relay 生成签名 → 客户端加载 → 过期刷新。需覆盖节点切换、弱网、权限失败、封面不存在和取消请求。</p>
+<h1 id="section-9">9. iPhone 锁屏媒体控制</h1>
+<p>播放器接入 iPhone 系统媒体会话，在锁屏和控制中心展示歌曲名、艺人、专辑/封面及播放状态。页面、后台和锁屏控制必须共享单一播放状态，避免状态不一致。</p>
+<p>锁屏左右控制必须固定为：左侧 <strong>上一曲</strong>，右侧 <strong>下一曲</strong>。不能映射为前进 10 秒或后退 10 秒，也不能按页面状态临时改变含义。队列首尾行为需在实现前固定：上一曲回到上一首或当前曲开头，下一曲在末尾停止或循环，并纳入测试。</p>
+<p>切歌后及时更新锁屏媒体信息；后台、断网和恢复网络时队列仍应可控。无封面时使用第 7 节默认图。必须在真实 iPhone 上验证。</p>
+<h1 id="section-10">10. 技术约束</h1>
+<ol><li>兼容移动 Safari，处理安全区、底部播放条、后台恢复和横竖屏。</li><li>歌曲身份由唯一 ID 确定，不依赖 DOM 文本；异步请求处理超时、取消、去重和权限错误。</li><li>Relay 地址由服务端运行时配置生成，前端不得硬编码内网域名、固定节点 ID 或固定公网域名。</li><li><code>files.html</code> 中的 <code>files.js</code> 引用必须带可变查询参数，强制刷新手机缓存。</li><li>图片使用懒加载、缩略图和尺寸约束；记录关键事件的结构化日志，敏感签名不得落日志。</li></ol>
+<h1 id="section-11">11. 验收标准</h1>
+<table><caption>表 1　验收标准</caption><thead><tr><th>验收项</th><th>通过标准</th></tr></thead><tbody>
+<tr><td>项目命名</td><td>全部页面、文案和资源使用 SelfNAS，不出现 Selfless</td></tr><tr><td>分页</td><td>首屏不全量加载；可追加；无重复、漏项和明显跳动</td></tr><tr><td>筛选</td><td>文件夹切换重置分页，结果不混入旧条件</td></tr><tr><td>歌单</td><td>可查看数量和列表，可播放全部及单曲，异常歌曲不拖垮页面</td></tr><tr><td>默认封面</td><td>包含黑胶、官方 SelfNAS 图标和完整字标，图标足够大</td></tr><tr><td>Relay</td><td>动态生成签名地址，不写死 <code>selfnas.local</code>、固定节点 ID 或固定域名</td></tr><tr><td>锁屏</td><td>左右控制分别执行上一曲、下一曲，绝不执行前进/后退 10 秒</td></tr><tr><td>缓存</td><td><code>files.html</code> 给 <code>files.js</code> 增加查询参数，手机端获得新脚本</td></tr><tr><td>移动端</td><td>iPhone Safari 无溢出，播放条不遮挡内容，返回后状态正确</td></tr>
+</tbody></table>
+<h1 id="section-12">12. 已知风险与后续维护规则</h1>
+<h2 id="section-12-1">12.1 已知风险</h2>
+<ul><li>曲库实时新增可能影响排序位置，需要快照或版本标记。</li><li>Relay 节点切换、签名过期和公网抖动可能导致封面短暂失败。</li><li>iOS 后台策略、媒体权限和音频格式存在系统差异，需真机回归。</li><li>默认封面在小缩略图中内容较多，需使用多尺寸资源；缓存未刷新时必须核对脚本 URL、响应内容和缓存头。</li></ul>
+<h2 id="section-12-2">12.2 维护规则</h2>
+<ol><li>修改分页字段、筛选参数、Relay 签名协议或锁屏映射时，同步更新接口类型、本文档和测试用例。</li><li>新增公网环境不得复制固定域名或节点 ID，统一从运行时 Relay 状态生成。</li><li>默认封面变更必须保留 SelfNAS 完整字标和足够大的官方图标，并回归列表、歌单、播放器三种尺寸。</li><li><code>files.js</code> 行为变更时，递增 <code>files.html</code> 查询参数，并在 iPhone 真机验证。</li><li>锁屏左右语义是高优先级回归项，不得被进度控制、快捷键或第三方适配逻辑覆盖。</li><li>每次发布记录版本号、接口与 Relay 变更、已知问题和回滚方式，确保维护可追溯。</li></ol>
+</section>
+</body>
+</html>

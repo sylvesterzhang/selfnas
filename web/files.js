@@ -1302,6 +1302,11 @@ function mpBindAudioEl(el) {
   a.addEventListener('play', () => {
     MP.startingPlay = false;
     MP.playAt = Date.now(); MP.aliveAt = MP.playAt; MP.aliveCt = a.currentTime;
+    // iOS Safari 有时在锁屏媒体面板建立后才接管 Media Session；
+    // 在真正开始播放这一刻重新注册曲目控制，避免旧页面遗留 seekbackward/seekforward。
+    mpRefreshMediaTrackActions();
+    // 同时再刷一次 metadata，确保默认封面也进入锁屏播放器。
+    if (MP.on && MP.list[MP.i]) mpMediaMeta(mpLabel(MP.list[MP.i]));
     mpPaintBtn(); mpSessionSave();
     mpMsState('playing'); mpMsPosition(true);
   });
@@ -1755,35 +1760,52 @@ function mpCoverURL(e) {
   return '/api/fs/cover?' + q(mpRootOf(e), e.path);
 }
 
+function mpAppURL(path) {
+  // Relay 会把 HTML 的 /assets/ 改写到 /selfnas-relay/n/<node>/assets/；
+  // JS 里不能再用 location.origin + "/assets"，否则锁屏 artwork 会请求到公网根路径 404。
+  return new URL(String(path || '').replace(/^\/+/, ''), document.baseURI).href;
+}
+
+function mpDefaultCoverURL() {
+  return mpAppURL('assets/cover-default.jpg');
+}
+
 function mpTrackArt(e) {
   const url = mpCoverURL(e);
+  const fallback = mpDefaultCoverURL();
   const root = $('mpRoot'), bg = $('mpBgImg'), cov = $('mpCover'), mini = $('mpMini');
   if (!root) return;
   // 先摘掉上一首的脸，等新图 onload 了再贴 —— 否则封面慢半秒时，
-  // 唱片上会挂着上一首的封面在转
+  // 唱片上会挂着上一首的封面在转。
   root.classList.remove('has-art');
   [bg, cov, mini].forEach((n) => n && n.classList.remove('on'));
-  const probe = new Image();
-  probe.onload = () => {
-    if (MP.list[MP.i] !== e) return;   // 加载期间已经切歌，别把旧图贴到新歌上
-    if (bg) bg.style.backgroundImage = 'url("' + url + '")';
-    [cov, mini].forEach((n) => { if (n) { n.src = url; n.classList.add('on'); } });
-    if (bg) bg.classList.add('on');
-    root.classList.add('has-art');
-    // 迷你条也在这儿换脸 —— 不能只在 mpMiniSync 里「借」全屏的图：
-    // mini 条上切歌时这里异步回来，借的时候全屏那张还摘着 on，就得等下次最小化才补得上
-    const barArt = $('mpMiniArt');
-    if (barArt) { barArt.src = url; barArt.classList.add('on'); }
+
+  const paint = (src) => {
+    const probe = new Image();
+    probe.onload = () => {
+      if (MP.list[MP.i] !== e) return;   // 加载期间已经切歌，别把旧图贴到新歌上
+      if (bg) bg.style.backgroundImage = 'url("' + src + '")';
+      [cov, mini].forEach((n) => { if (n) { n.src = src; n.classList.add('on'); } });
+      if (bg) bg.classList.add('on');
+      root.classList.add('has-art');
+      // 迷你条也在这儿换脸，保证无封面歌曲也始终有品牌封面。
+      const barArt = $('mpMiniArt');
+      if (barArt) { barArt.src = src; barArt.classList.add('on'); }
+    };
+    probe.onerror = () => {
+      if (MP.list[MP.i] !== e) return;
+      // 真封面不存在、格式异常或请求失败时，永远回退到 SelfNAS 品牌封面，
+      // 不再让播放器出现一块空白。
+      if (src !== fallback) { paint(fallback); return; }
+      if (bg) { bg.style.backgroundImage = ''; bg.classList.remove('on'); }
+      [cov, mini].forEach((n) => { if (n) { n.removeAttribute('src'); n.classList.remove('on'); } });
+      root.classList.remove('has-art');
+      const barArt = $('mpMiniArt');
+      if (barArt) { barArt.removeAttribute('src'); barArt.classList.remove('on'); }
+    };
+    probe.src = src;
   };
-  probe.onerror = () => {
-    if (MP.list[MP.i] !== e) return;
-    if (bg) { bg.style.backgroundImage = ''; bg.classList.remove('on'); }
-    [cov, mini].forEach((n) => { if (n) { n.removeAttribute('src'); n.classList.remove('on'); } });
-    root.classList.remove('has-art');
-    const barArt = $('mpMiniArt');
-    if (barArt) { barArt.removeAttribute('src'); barArt.classList.remove('on'); }
-  };
-  probe.src = url;
+  paint(url);
 }
 
 async function mpLoadLyric(e) {
@@ -2330,9 +2352,28 @@ function mpMsReset() { mpMsPosAt = -1; }
 // （含部分 Safari / WebView）只取 artwork[0]，若第一张是 96 就会在锁屏上糊成马赛克
 // —— 那正是上一轮刚修好的 iOS 锁屏封面。大的放前面，两边都拿到高清图。
 const MP_ART_SIDES = [512, 384, 256, 192, 128, 96];
+function mpPublicSignedURL(raw) {
+  // /api/fs/link 在 Relay 客户端内部生成的绝对地址可能是
+  // http://selfnas.local/f?...；这个地址只在局域网客户端内部可用。
+  // 锁屏系统必须从当前页面的公网基址取图，只复用签名查询参数即可。
+  try {
+    const u = new URL(raw, document.baseURI);
+    return new URL('f?' + u.search.replace(/^\?/, ''), document.baseURI).href;
+  } catch (err) {
+    return '';
+  }
+}
+
 function mpArtList(link) {
   const one = (src, sizes) => ({ src: src, sizes: sizes, type: 'image/jpeg' });
-  if (!link) return [one(location.origin + '/assets/cover-default.jpg', '640x640')];
+  if (!link) {
+    // iOS 小锁屏面板对大图兼容很差：每个 sizes 都给真实对应尺寸，
+    // 同时用 document.baseURI 保留 Relay 的 /selfnas-relay/n/<node>/ 前缀。
+    return MP_ART_SIDES.map((s) => one(
+      mpAppURL('assets/cover-default-' + s + '.jpg?v=selfless-v3'),
+      s + 'x' + s
+    ));
+  }
   return MP_ART_SIDES.map((s) => one(link + '&cover=1&w=' + s, s + 'x' + s));
 }
 
@@ -2358,32 +2399,38 @@ function mpMediaMeta(L) {
   // 免登录），加 cover=1 让服务端吐封面图而不是音频流；歌没内嵌封面时服务端
   // 也回这张通用专辑图（按 w 缩好），不会 404。
   api('/api/fs/link?' + q(mpRootOf(e), e.path)).then((r) => {
-    if (r.code !== 0 || !r.data || !r.data.url) return;
+    if (r.code !== 0 || !r.data || !(r.data.path || r.data.url)) return;
     if (MP.list[MP.i] !== e) return;   // 请求回来时已经切歌，别把上一首的封面贴上去
-    put(mpArtList(r.data.url));
+    const publicURL = mpPublicSignedURL(r.data.path || r.data.url);
+    if (publicURL) put(mpArtList(publicURL));
   }).catch(() => {});
 }
 
-function hookMediaSession() {
-  if (mpMsHooked || !('mediaSession' in navigator)) return;
-  mpMsHooked = true;
+function mpRefreshMediaTrackActions() {
+  if (!('mediaSession' in navigator)) return;
   const set = (a, fn) => { try { navigator.mediaSession.setActionHandler(a, fn); } catch (e) {} };
-  set('play', () => mpUserPlay());      // 锁屏 / 耳机线控按播放，也是用户意图
-  set('pause', () => mpUserPause());
-  // ⭐ 锁屏播放键两侧只放「上一曲 / 下一曲」。系统媒体面板只显示**注册过**的 action，
-  // 而 iOS 锁屏左右各只有一个位置：同时注册 seekbackward / seekforward 时，那两个位置
-  // 会被快退 / 快进 10 秒占掉（用户看到的就是这个）。音乐播放器按歌切才对。
-  // Android 通知栏同样是这套规则，注销后也会显示切歌键。
-  // 想跳到某个位置用锁屏进度条 —— seekto 保留，不影响左右按钮。
-  set('previoustrack', () => mpStep(-1));
-  set('nexttrack', () => mpStep(1));
-  set('seekto', (d) => {
-    if (MP.el && d.seekTime != null) MP.el.currentTime = d.seekTime;
-    mpMsPosition(true);
-  });
-  // 显式置 null：把快进/快退从系统控件里撤掉，也兜住浏览器可能残留的旧 handler
+  // 先注销旧的快退/快进，再注册锁屏左右的上一曲/下一曲。
+  // iOS 在页面重载或后台接管媒体面板时，可能短暂保留上一版 action。
   set('seekbackward', null);
   set('seekforward', null);
+  set('previoustrack', () => mpStep(-1));
+  set('nexttrack', () => mpStep(1));
+}
+
+function hookMediaSession() {
+  if (!('mediaSession' in navigator)) return;
+  if (!mpMsHooked) {
+    mpMsHooked = true;
+    const set = (a, fn) => { try { navigator.mediaSession.setActionHandler(a, fn); } catch (e) {} };
+    set('play', () => mpUserPlay());      // 锁屏 / 耳机线控按播放，也是用户意图
+    set('pause', () => mpUserPause());
+    set('seekto', (d) => {
+      if (MP.el && d.seekTime != null) MP.el.currentTime = d.seekTime;
+      mpMsPosition(true);
+    });
+  }
+  // 锁屏左右只放上一曲/下一曲；每次 hook 都重新清掉旧的 10 秒动作。
+  mpRefreshMediaTrackActions();
   // 首次挂上就把状态对齐：刷新恢复成暂停时别让通知栏还亮着「正在播放」
   mpMsState(MP.el && MP.el.getAttribute('src') ? (mpAlive() ? 'playing' : 'paused') : 'none');
 }
@@ -3160,9 +3207,17 @@ $('viewerClose').addEventListener('click', closeViewer);
 // 音频走「歌曲收藏」（音乐自己的，跟文件收藏两码事），其它类型照旧走文件收藏。
 async function muFavLoad() {
   try {
-    const r = await api('/api/music/fav');
-    MU.favs = r.data || [];
-    MU.favSet = new Set(MU.favs.map((x) => x.root + '|' + x.path));
+    const all = [];
+    let offset = 0, hasMore = true;
+    while (hasMore) {
+      const r = await api('/api/music/fav?offset=' + offset + '&limit=200');
+      const page = r.data && Array.isArray(r.data.items) ? r.data : { items: r.data || [], hasMore: false };
+      all.push(...page.items);
+      offset += page.items.length;
+      hasMore = !!page.hasMore && page.items.length > 0;
+    }
+    MU.favs = all;
+    MU.favSet = new Set(all.map((x) => x.root + '|' + x.path));
   } catch (err) {
     MU.favSet = new Set();
   }
@@ -5149,6 +5204,10 @@ const MU = {
   plId: 0, plName: '',          // 歌单详情
   stack: [],                    // 导航栈，顶层是 tab 本身
   scanTimer: 0, searchTimer: 0, loadSeq: 0,   // loadSeq：切 tab 动画期间连点，旧的加载直接作废
+  trackOffset: 0, trackTotal: 0, trackHasMore: false, trackLoading: false,
+  favOffset: 0, favTotal: 0, favHasMore: false, favLoading: false,
+  plOffset: 0, plTotal: 0, plHasMore: false, plLoading: false, plItems: [],
+  pageKind: '', pageOffset: 0, pageTotal: 0, pageHasMore: false, pageLoading: false,
   curTracks: [],                // 当前视图的曲目（点击行就从这里起播）
   favs: [], favSet: null,       // 歌曲收藏（跟文件收藏完全独立）；favSet 为 null 表示还没拉过
   libDirs: null,                // 曲库目录列表（筛选条用），null = 还没拉过
@@ -5208,6 +5267,19 @@ async function muLibDirsLoad() {
       path: p,
       name: String(p).replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p,
     }));
+    // 移出曲库的目录可能还保存在浏览器上次浏览位置（mu_view）里。
+    // 目录被删除后，这个旧筛选会让总库有歌但当前列表一直为空；清掉所有栈内残留。
+    const cleanPath = (p) => String(p || '').replace(/[\\/]+$/, '').toLowerCase();
+    const valid = new Set(MU.libDirs.map((x) => cleanPath(x.path)));
+    let stale = false;
+    if (MU.rootFilter && !valid.has(cleanPath(MU.rootFilter))) stale = true;
+    for (const view of MU.stack) {
+      if (view.rootFilter && !valid.has(cleanPath(view.rootFilter))) {
+        view.rootFilter = '';
+        stale = true;
+      }
+    }
+    if (stale) MU.rootFilter = '';
   } catch (err) {
     MU.libDirs = [];
   }
@@ -5223,10 +5295,48 @@ function muFilterBarHTML() {
   return '<div class="mu-filter">' + btn('', '所有') + dirs.map((x) => btn(x.path, x.name)).join('') + '</div>';
 }
 
+// 曲库目录很多时，筛选条是横向滚动的。恢复音乐页/重新渲染列表后，
+// 当前选中的 chip 必须回到可视区；不能只恢复 on 样式，却把它留在屏幕外。
+function muBindMusicFilter(body) {
+  body.querySelectorAll('[data-rootf]:not([data-bound])').forEach((c) => {
+    c.dataset.bound = '1';
+    c.addEventListener('click', () => {
+      const v = c.dataset.rootf;
+      if (v === MU.rootFilter) return;
+      MU.rootFilter = v;
+      MU.stack[MU.stack.length - 1] = muView();
+      MU.pageOffset = 0; MU.trackOffset = 0;
+      muLoad();
+    });
+  });
+}
+
+function muRevealSelectedFilter() {
+  const bar = document.querySelector('#muBody .mu-filter');
+  const chip = bar && bar.querySelector('.mu-fchip.on');
+  if (!bar || !chip) return;
+  const max = Math.max(0, bar.scrollWidth - bar.clientWidth);
+  const target = chip.offsetLeft - Math.max(0, (bar.clientWidth - chip.offsetWidth) / 2);
+  bar.scrollLeft = Math.max(0, Math.min(max, target));
+  // 移动端字体/布局可能在下一帧才稳定，再校正一次，避免刚进入时被挤回去。
+  requestAnimationFrame(() => {
+    if (!chip.isConnected) return;
+    const max2 = Math.max(0, bar.scrollWidth - bar.clientWidth);
+    const target2 = chip.offsetLeft - Math.max(0, (bar.clientWidth - chip.offsetWidth) / 2);
+    bar.scrollLeft = Math.max(0, Math.min(max2, target2));
+  });
+}
+
 // 纯 UI 切换。hash（#music）是音乐模式的唯一真源：URL 上带着它，
 // 刷新、直接开链接都落在音乐页，后退键退掉 hash 就退出音乐 —— 三条路汇成一条。
+function muClearPlaylistFab() {
+  document.querySelectorAll('.mu-pl-fab').forEach((x) => x.remove());
+  document.body.classList.remove('playlist-on');
+}
+
 async function applyMusic(on) {
   if (on === MU.on) return;            // 幂等：back() 与它引发的 hashchange 会各来一次
+  if (!on) muClearPlaylistFab();
   MU.on = on;
   document.body.classList.toggle('music-on', on);
   $('musicView').hidden = !on;
@@ -5244,7 +5354,7 @@ async function applyMusic(on) {
     $('muRescan').hidden = !MU.admin;
     $('muMgr').hidden = !MU.admin;
     muFavLoad();   // 顺手把歌曲收藏拉一遍，播放页的 ☆ 状态要用
-    muRestore();   // 上次逛到哪（tab/歌单/搜索词）就落在哪 —— 刷新、重开都不丢位置
+    muRestore();   // 上次逛到哪（tab/歌单）就落在哪；曲目列表按滚动分批加载
     muLoad();
   }
   // 顶栏换了（文件页顶栏 ↔ 音乐顶栏），同步高度与回顶按钮状态
@@ -5290,17 +5400,17 @@ function muReset() {
   if (s) s.value = '';
 }
 
-// 恢复上次的音乐页位置：localStorage 里有就原样落回去（含下钻栈，比如「歌单 → 某歌单详情」），
-// 没有才回歌手页。跟 muLoad 里的 muSaveView 是一对。
+// 恢复上次的音乐页位置（含下钻栈），但搜索词不跨次进入保留。
+// 搜索词属于临时筛选，每次进入音乐页都从空值开始。
 function muRestore() {
   let s = null;
   try { s = JSON.parse(localStorage.getItem('mu_view') || 'null'); } catch (e) { s = null; }
   if (s && s.tab && Array.isArray(s.stack) && s.stack.length) {
     MU.stack = s.stack;
     muApply(s.stack[s.stack.length - 1]);
-    MU.q = String(s.q || '');
+    MU.q = '';
     const el = $('muSearch');
-    if (el) el.value = MU.q;
+    if (el) el.value = '';
   } else {
     muReset();
   }
@@ -5348,12 +5458,13 @@ function muFadeIn(body) {
 }
 
 async function muLoad() {
+  muClearPlaylistFab();
   const seq = ++MU.loadSeq;
   clearTimeout(MU.scanTimer);
-  // 视图状态落 localStorage：刷新 / 重开浏览器后原样恢复（tab、下钻位置、歌单、搜索词）。
+  // 仅持久化视图位置，不持久化搜索词；每次重新进入音乐页时搜索从空值开始。
   // 所有会改视图的路（muGo/muBack/切 tab/搜索/重命名）最后都汇到 muLoad，在这里存最稳。
   try {
-    localStorage.setItem('mu_view', JSON.stringify({ tab: MU.tab, q: MU.q, stack: MU.stack }));
+    localStorage.setItem('mu_view', JSON.stringify({ tab: MU.tab, stack: MU.stack }));
   } catch (e) { /* 存不进去就当没有 */ }
   // 头部（tab/返回/搜索框）只在视图结构变化时重画：搜索打字时只刷 body，
   // 否则输入框每 300ms 被重建一次，焦点直接飞了
@@ -5379,40 +5490,51 @@ async function muLoad() {
   const fresh = () => seq === MU.loadSeq && body.isConnected;
   try {
     if (MU.tab === 'artists') {
-      const r = await api('/api/music/artists?' + qs);
+      const r = await api('/api/music/artists?' + (MU.rootFilter ? 'lib=' + encodeURIComponent(MU.rootFilter) + '&' : '') + qs + 'offset=0&limit=60');
       if (!fresh()) return;
       body.innerHTML = '';
-      muRenderArtists((r.data || []));
+      const page = r.data && Array.isArray(r.data.items) ? r.data : { items: r.data || [], total: (r.data || []).length, offset: 0, hasMore: false };
+      muRenderArtists(page.items, page);
     } else if (MU.tab === 'albums') {
       const r = await api('/api/music/albums?' +
-        (MU.artist ? 'artist=' + encodeURIComponent(MU.artist) + '&' : '') + qs);
+        (MU.rootFilter ? 'lib=' + encodeURIComponent(MU.rootFilter) + '&' : '') +
+        (MU.artist ? 'artist=' + encodeURIComponent(MU.artist) + '&' : '') + qs + 'offset=0&limit=60');
       if (!fresh()) return;
       body.innerHTML = '';
-      muRenderAlbums(r.data || []);
+      const page = r.data && Array.isArray(r.data.items) ? r.data : { items: r.data || [], total: (r.data || []).length, offset: 0, hasMore: false };
+      muRenderAlbums(page.items, page);
     } else if (MU.tab === 'tracks') {
+      // 先刷新曲库目录并校验持久化筛选；目录移出曲库后必须清掉旧筛选。
+      await muLibDirsLoad();
+      if (!fresh()) return;
       // lib 筛选只在「全部曲目」视图给（下钻歌手/专辑时位置已被锁死，再筛没意义）
       const p = (MU.rootFilter ? 'lib=' + encodeURIComponent(MU.rootFilter) + '&' : '') +
         (MU.artist ? 'artist=' + encodeURIComponent(MU.artist) + '&' : '') +
         (MU.album ? 'album=' + encodeURIComponent(MU.album) + '&' : '') + qs;
-      const r = await api('/api/music/tracks?' + p);
+      const r = await api('/api/music/tracks?' + p + 'offset=0&limit=60');
       if (!MU.favSet) await muFavLoad();   // 行上要画收藏星，星的状态不能猜
-      if (!MU.artist && !MU.album) await muLibDirsLoad();   // 筛选条要曲库目录名
       if (!fresh()) return;
       body.innerHTML = '';
-      muRenderTracks(r.data || []);
+      const page = r.data && Array.isArray(r.data.items) ? r.data : { items: r.data || [], total: (r.data || []).length, offset: 0, hasMore: false };
+      muRenderTracks(page.items, page);
     } else if (MU.tab === 'favs') {
-      // 收藏列表进音乐页时已经拉过；这里只补「还没拉过」的情况 ——
-      // 搜索框每敲一下都会重画 body，别让它每敲一下都发一次请求
+      // 收藏列表也按统一分页首屏加载；搜索时使用已同步的完整收藏集合做本地过滤。
       if (!MU.favSet) await muFavLoad();
       if (!fresh()) return;
       body.innerHTML = '';
-      // 收藏是本地就有的一份，搜索直接前端过滤，不用再跑服务端
       const kw = MU.q.trim().toLowerCase();
-      const list = kw
-        ? MU.favs.filter((t) => [t.title, t.artist, t.albumArtist, t.album]
-            .some((s) => String(s || '').toLowerCase().includes(kw)))
-        : MU.favs;
-      muRenderFavs(list);
+      if (kw) {
+        const list = MU.favs.filter((t) => [t.title, t.artist, t.albumArtist, t.album]
+          .some((s) => String(s || '').toLowerCase().includes(kw)));
+        MU.favOffset = list.length; MU.favTotal = list.length; MU.favHasMore = false;
+        muRenderFavs(list);
+      } else {
+        const r = await api('/api/music/fav?offset=0&limit=60');
+        if (!fresh()) return;
+        const page = r.data && Array.isArray(r.data.items) ? r.data : { items: r.data || [], total: (r.data || []).length, offset: 0, hasMore: false };
+        MU.favOffset = page.offset + page.items.length; MU.favTotal = page.total; MU.favHasMore = !!page.hasMore;
+        muRenderFavs(page.items, page);
+      }
     } else if (MU.tab === 'playlists') {
       // 歌单页「进来就展开」：先拉列表，默认选中第一个（或上次停留的那个），
       // 顶部给一排切换 chips，点哪个看哪个 —— 省掉原来「点歌单 → 再点某一首」的额外一步。
@@ -5434,10 +5556,12 @@ async function muLoad() {
         MU.plId = def.id; MU.plName = def.name;
         if (MU.stack.length) Object.assign(MU.stack[MU.stack.length - 1], { plId: MU.plId, plName: MU.plName });
       }
-      const r = await api('/api/music/playlist/items?id=' + MU.plId);
+      const r = await api('/api/music/playlist/items?id=' + MU.plId + '&offset=0&limit=60');
       if (!MU.favSet) await muFavLoad();   // 歌单里的每一首也要画收藏星
       if (!fresh()) return;
-      muRenderPlItems(r.data || [], pls);
+      const page = r.data && Array.isArray(r.data.items) ? r.data : { items: r.data || [], total: (r.data || []).length, offset: 0, hasMore: false };
+      MU.plOffset = page.offset + page.items.length; MU.plTotal = page.total; MU.plHasMore = !!page.hasMore;
+      muRenderPlItems(page.items, pls, page);
     }
   } catch (e) {
     if (seq === MU.loadSeq && e.message !== '未登录') body.innerHTML = '<div class="mu-empty">' + esc(e.message) + '</div>';
@@ -5709,8 +5833,9 @@ async function muShuffleAll() {
   if (MU.shuffling) return;
   MU.shuffling = true;
   try {
-    const r = await api('/api/music/tracks');
-    const list = (r.data || []).map(muEntry);
+    const r = await api('/api/music/tracks?limit=200');
+    const page = r.data && Array.isArray(r.data.items) ? r.data.items : (r.data || []);
+    const list = page.map(muEntry);
     if (!list.length) { toast('曲库还是空的，先添加曲库目录'); return; }
     playFromMusic(list, Math.floor(Math.random() * list.length));
     if (!MP.shuffle) mpToggleShuffleForce(true);
@@ -5747,8 +5872,65 @@ function muEmpty(msg, sub, action) {
     (sub ? '<div class="mu-empty-s">' + esc(sub) + '</div>' : '') + (action || '') + '</div>';
 }
 
-function muRenderArtists(list) {
+function muPageMoreHTML() {
+  return '<div class="mu-more" id="muMore" style="text-align:center;padding:18px;color:var(--text-3)">' +
+    (MU.pageHasMore ? '继续下滑加载更多' : '已加载全部 ' + MU.pageTotal + ' 项') + '</div>';
+}
+
+async function muLoadMorePage() {
+  if (MU.pageLoading || !MU.pageHasMore || (MU.pageKind !== 'artists' && MU.pageKind !== 'albums')) return;
+  MU.pageLoading = true;
+  const p = (MU.rootFilter ? 'lib=' + encodeURIComponent(MU.rootFilter) + '&' : '') +
+    (MU.pageKind === 'albums' && MU.artist ? 'artist=' + encodeURIComponent(MU.artist) + '&' : '') +
+    (MU.q ? 'q=' + encodeURIComponent(MU.q) + '&' : '') +
+    'offset=' + MU.pageOffset + '&limit=60';
+  const endpoint = MU.pageKind === 'artists' ? '/api/music/artists?' : '/api/music/albums?';
+  try {
+    const r = await api(endpoint + p);
+    const page = r.data || {};
+    const items = Array.isArray(page.items) ? page.items : [];
+    const body = $('muBody');
+    const grid = body && body.querySelector('.mu-grid');
+    const start = MU.pageOffset;
+    MU.pageOffset = Number(page.offset || start) + items.length;
+    MU.pageTotal = Number(page.total || MU.pageTotal);
+    MU.pageHasMore = !!page.hasMore;
+    if (grid && items.length) {
+      const html = MU.pageKind === 'artists'
+        ? items.map((a) => '<button class="mu-card" data-artist="' + esc(a.name) + '"><span class="mu-ava">' + esc(a.name.slice(0, 1).toUpperCase()) + '</span><span class="mu-card-t">' + esc(a.name) + '</span><span class="mu-card-s">' + a.albums + ' 张专辑 · ' + a.tracks + ' 首</span></button>').join('')
+        : items.map((a) => '<button class="mu-card al" data-album="' + esc(a.album) + '" data-album-artist="' + esc(a.artist) + '"><span class="mu-cov"><img loading="lazy" alt="" src="/api/fs/cover?' + q(a.root, a.path) + '" onerror="this.style.display=\'none\';this.parentElement.classList.add(\'ph\')"><i>' + MU_ICON.note + '</i></span><span class="mu-card-t">' + esc(a.album) + '</span><span class="mu-card-s">' + esc(a.artist) + (a.year ? ' · ' + a.year : '') + ' · ' + a.tracks + ' 首</span></button>').join('');
+      grid.insertAdjacentHTML('beforeend', html);
+      muBindPagedCards(body);
+      muBindMusicFilter(body);
+    }
+  } finally {
+    MU.pageLoading = false;
+    const more = $('muMore');
+    if (more) more.textContent = MU.pageHasMore ? '继续下滑加载更多' : '已加载全部 ' + MU.pageTotal + ' 项';
+  }
+}
+
+function muBindPagedCards(body) {
+  body.querySelectorAll('[data-artist]:not([data-bound])').forEach((c) => { c.dataset.bound = '1'; c.addEventListener('click', () => muGo({ tab: 'albums', artist: c.dataset.artist })); });
+  body.querySelectorAll('.mu-card.al:not([data-bound])').forEach((c) => { c.dataset.bound = '1'; c.addEventListener('click', () => muGo({ tab: 'tracks', album: c.dataset.album, artist: c.dataset.albumArtist })); });
+}
+
+function muObservePageMore() {
+  const more = $('muMore');
+  if (!more || more.dataset.observed === '1') return;
+  more.dataset.observed = '1';
+  if (!MU.pageHasMore) return;
+  const io = new IntersectionObserver((entries) => { if (entries.some((x) => x.isIntersecting)) muLoadMorePage(); }, { rootMargin: '500px' });
+  io.observe(more);
+  more._io = io;
+}
+
+function muRenderArtists(list, page) {
   const body = $('muBody');
+  MU.pageKind = 'artists';
+  MU.pageOffset = page ? Number(page.offset || 0) + list.length : list.length;
+  MU.pageTotal = page ? Number(page.total || list.length) : list.length;
+  MU.pageHasMore = page ? !!page.hasMore : false;
   if (!list.length) {
     // 搜不到 ≠ 曲库空：别让人以为库坏了去加目录，先请他换个词
     if (MU.q) { body.innerHTML = muEmpty('没有找到匹配的歌手', '换个关键词试试'); return; }
@@ -5760,54 +5942,136 @@ function muRenderArtists(list) {
     if (act) act.addEventListener('click', openLibMgr);
     return;
   }
-  body.innerHTML = '<div class="mu-grid">' + list.map((a) =>
+  const filterBar = muFilterBarHTML();
+  body.innerHTML = filterBar + '<div class="mu-grid">' + list.map((a) =>
     '<button class="mu-card" data-artist="' + esc(a.name) + '">' +
       '<span class="mu-ava">' + esc(a.name.slice(0, 1).toUpperCase()) + '</span>' +
       '<span class="mu-card-t">' + esc(a.name) + '</span>' +
       '<span class="mu-card-s">' + a.albums + ' 张专辑 · ' + a.tracks + ' 首</span>' +
     '</button>').join('') + '</div>';
-  body.querySelectorAll('[data-artist]').forEach((c) => {
-    c.addEventListener('click', () => muGo({ tab: 'albums', artist: c.dataset.artist }));
-  });
+  muBindPagedCards(body);
+  muBindMusicFilter(body);
+  body.insertAdjacentHTML('beforeend', muPageMoreHTML());
+  muRevealSelectedFilter();
+  muObservePageMore();
 }
 
-function muRenderAlbums(list) {
+function muRenderAlbums(list, page) {
   const body = $('muBody');
+  MU.pageKind = 'albums';
+  MU.pageOffset = page ? Number(page.offset || 0) + list.length : list.length;
+  MU.pageTotal = page ? Number(page.total || list.length) : list.length;
+  MU.pageHasMore = page ? !!page.hasMore : false;
   if (!list.length) { body.innerHTML = muEmpty(MU.q ? '没有找到匹配的专辑' : '没有专辑', MU.q ? '换个关键词试试' : ''); return; }
-  body.innerHTML = '<div class="mu-grid al">' + list.map((a, i) =>
-    '<button class="mu-card al" data-i="' + i + '">' +
+  body.innerHTML = muFilterBarHTML() + '<div class="mu-grid al">' + list.map((a, i) =>
+    '<button class="mu-card al" data-album="' + esc(a.album) + '" data-album-artist="' + esc(a.artist) + '">' +
       '<span class="mu-cov"><img loading="lazy" alt="" src="/api/fs/cover?' + q(a.root, a.path) + '" ' +
         'onerror="this.style.display=\'none\';this.parentElement.classList.add(\'ph\')">' +
         '<i>' + MU_ICON.note + '</i></span>' +
       '<span class="mu-card-t">' + esc(a.album) + '</span>' +
       '<span class="mu-card-s">' + esc(a.artist) + (a.year ? ' · ' + a.year : '') + ' · ' + a.tracks + ' 首</span>' +
     '</button>').join('') + '</div>';
-  body.querySelectorAll('[data-i]').forEach((c) => {
-    c.addEventListener('click', () => {
-      const a = list[+c.dataset.i];
-      muGo({ tab: 'tracks', album: a.album, artist: a.artist });
+  muBindPagedCards(body);
+  muBindMusicFilter(body);
+  muRevealSelectedFilter();
+  body.insertAdjacentHTML('beforeend', muPageMoreHTML());
+  muObservePageMore();
+}
+
+function muTrackRowHTML(t, i) {
+  return '<div class="mu-row" data-i="' + i + '" data-play="' + esc(t.root + '|' + t.path) + '">' +
+    '<span class="mu-no"><b class="mu-eq"><i></i><i></i><i></i></b><em>' + (t.trackNo > 0 ? t.trackNo : i + 1) + '</em></span>' +
+    '<span class="mu-main"><b><span class="mu-t">' + esc(t.title) + '</span>' + muQBadge(t.q) + '</b><i>' +
+      esc([t.artist || t.albumArtist, t.album].filter(Boolean).join(' · ') || '未知歌手') + '</i></span>' +
+    '<span class="mu-dur">' + fmtMuDur(t.duration) + '</span>' +
+    muFavBtnHTML(t) +
+    '<button class="mu-add" data-add="' + i + '" title="加入歌单">' + MU_ICON.plus + '</button>' +
+  '</div>';
+}
+
+function muBindTrackRows(body) {
+  body.querySelectorAll('.mu-row:not([data-bound])').forEach((r) => {
+    r.dataset.bound = '1';
+    r.addEventListener('click', (e) => {
+      if (e.target.closest('[data-add]') || e.target.closest('[data-fav]')) return;
+      playFromMusic(MU.curTracks, +r.dataset.i);
+    });
+  });
+  body.querySelectorAll('[data-add]:not([data-bound])').forEach((b) => {
+    b.dataset.bound = '1';
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openPlPick(MU.curTracks[+b.dataset.add]);
     });
   });
 }
 
-function muRenderTracks(list) {
+function muTrackMoreHTML() {
+  return '<div class="mu-more" id="muMore" style="text-align:center;padding:18px;color:var(--text-3)">' +
+    (MU.trackLoading ? '正在加载更多…' : MU.trackHasMore ? '继续下滑加载更多' : '已加载全部 ' + MU.trackTotal + ' 首') + '</div>';
+}
+
+function muObserveTrackMore() {
+  const more = $('muMore');
+  if (!more || more.dataset.observed === '1') return;
+  more.dataset.observed = '1';
+  if (MU.trackHasMore) {
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((x) => x.isIntersecting)) muLoadMoreTracks();
+    }, { rootMargin: '500px' });
+    io.observe(more);
+    more._io = io;
+  }
+}
+
+async function muLoadMoreTracks() {
+  if (MU.trackLoading || !MU.trackHasMore || MU.tab !== 'tracks') return;
+  MU.trackLoading = true;
+  const more = $('muMore');
+  if (more) more.textContent = '正在加载更多…';
+  const p = (MU.rootFilter ? 'lib=' + encodeURIComponent(MU.rootFilter) + '&' : '') +
+    (MU.artist ? 'artist=' + encodeURIComponent(MU.artist) + '&' : '') +
+    (MU.album ? 'album=' + encodeURIComponent(MU.album) + '&' : '') +
+    (MU.q ? 'q=' + encodeURIComponent(MU.q) + '&' : '') +
+    'offset=' + MU.trackOffset + '&limit=60';
+  try {
+    const r = await api('/api/music/tracks?' + p);
+    const page = r.data || {};
+    const items = Array.isArray(page.items) ? page.items : [];
+    MU.trackTotal = Number(page.total || 0);
+    MU.trackOffset = Number(page.offset || MU.trackOffset) + items.length;
+    MU.trackHasMore = !!page.hasMore;
+    MU.curTracks.push(...items);
+    const list = $('muBody').querySelector('.mu-list');
+    if (list && items.length) list.insertAdjacentHTML('beforeend', items.map((t, i) => muTrackRowHTML(t, MU.curTracks.length - items.length + i)).join(''));
+    muBindTrackRows($('muBody'));
+    muMarkPlaying();
+  } catch (e) {
+    if (more) more.textContent = '加载失败，点击重试';
+    if (more) more.onclick = () => { more.onclick = null; MU.trackLoading = false; muLoadMoreTracks(); };
+  } finally {
+    MU.trackLoading = false;
+    const current = $('muMore');
+    if (current) current.textContent = MU.trackHasMore ? '继续下滑加载更多' : '已加载全部 ' + MU.trackTotal + ' 首';
+    muObserveTrackMore();
+  }
+}
+
+function muRenderTracks(list, page) {
   const body = $('muBody');
-  MU.curTracks = list;
+  MU.pageKind = 'tracks';
+  const items = Array.isArray(list) ? list : [];
+  MU.curTracks = items.slice();
+  MU.trackOffset = page ? Number(page.offset || 0) + items.length : items.length;
+  MU.trackTotal = page ? Number(page.total || items.length) : items.length;
+  MU.trackHasMore = page ? !!page.hasMore : false;
   // 全部曲目视图（非下钻）顶部给一行「所有 / 各文件夹」筛选
   const filterBar = (MU.tab === 'tracks' && !MU.artist && !MU.album) ? muFilterBarHTML() : '';
-  if (!list.length) { body.innerHTML = filterBar + muEmpty(MU.q ? '没有找到匹配的曲目' : '没有曲目', MU.q ? '换个关键词试试' : ''); }
-  else {
-    body.innerHTML = filterBar + '<div class="mu-list">' + list.map((t, i) =>
-      '<div class="mu-row" data-i="' + i + '" data-play="' + esc(t.root + '|' + t.path) + '">' +
-        '<span class="mu-no"><b class="mu-eq"><i></i><i></i><i></i></b><em>' + (t.trackNo > 0 ? t.trackNo : i + 1) + '</em></span>' +
-        '<span class="mu-main"><b><span class="mu-t">' + esc(t.title) + '</span>' + muQBadge(t.q) + '</b><i>' +
-          esc([t.artist || t.albumArtist, t.album].filter(Boolean).join(' · ') || '未知歌手') + '</i></span>' +
-        '<span class="mu-dur">' + fmtMuDur(t.duration) + '</span>' +
-        muFavBtnHTML(t) +
-        '<button class="mu-add" data-add="' + i + '" title="加入歌单">' + MU_ICON.plus + '</button>' +
-      '</div>').join('') + '</div>';
+  if (!items.length) {
+    body.innerHTML = filterBar + muEmpty(MU.q ? '没有找到匹配的曲目' : '没有曲目', MU.q ? '换个关键词试试' : '');
+  } else {
+    body.innerHTML = filterBar + '<div class="mu-list">' + items.map((t, i) => muTrackRowHTML(t, i)).join('') + '</div>' + muTrackMoreHTML();
   }
-  // 筛选 chips：点了就换 rootFilter 重拉（当前视图的栈也同步，刷新恢复用得上）
   body.querySelectorAll('[data-rootf]').forEach((c) => {
     c.addEventListener('click', () => {
       const v = c.dataset.rootf;
@@ -5817,25 +6081,56 @@ function muRenderTracks(list) {
       muLoad();
     });
   });
+  muBindTrackRows(body);
   muMarkPlaying();
-  body.querySelectorAll('.mu-row').forEach((r) => {
-    r.addEventListener('click', (e) => {
-      if (e.target.closest('[data-add]') || e.target.closest('[data-fav]')) return;
-      playFromMusic(MU.curTracks, +r.dataset.i);
-    });
-  });
-  body.querySelectorAll('[data-add]').forEach((b) => {
-    b.addEventListener('click', (e) => {
-      e.stopPropagation();
-      openPlPick(MU.curTracks[+b.dataset.add]);
-    });
-  });
+  muRevealSelectedFilter();
+  muObserveTrackMore();
 }
 
 // 收藏 tab：结构跟曲目列表一样（能播、能加歌单），只是数据源是 music_fav。
 // 空态给出动作指引 —— 播放页右上角的 ☆ 才是收藏入口。
 // 行带左滑删除：滑开点「取消收藏」= POST /api/music/fav 的 toggle 反向。
-function muRenderFavs(list) {
+async function muLoadMoreFavs() {
+  if (MU.favLoading || !MU.favHasMore || MU.q) return;
+  MU.favLoading = true;
+  try {
+    const r = await api('/api/music/fav?offset=' + MU.favOffset + '&limit=60');
+    const page = r.data || {}, items = Array.isArray(page.items) ? page.items : [];
+    MU.favOffset = Number(page.offset || MU.favOffset) + items.length;
+    MU.favTotal = Number(page.total || MU.favTotal); MU.favHasMore = !!page.hasMore;
+    items.forEach((x) => MU.favSet.add(x.root + '|' + x.path));
+    const body = $('muBody'), list = body && body.querySelector('.mu-list');
+    if (list && items.length) {
+      const start = MU.curTracks.length;
+      MU.curTracks.push(...items);
+      list.insertAdjacentHTML('beforeend', items.map((t, i) => muFavRowHTML(t, start + i)).join(''));
+      muBindFavRows(body);
+    }
+  } finally {
+    MU.favLoading = false;
+    const more = $('muMore'); if (more) more.textContent = MU.favHasMore ? '继续下滑加载更多' : '已加载全部 ' + MU.favTotal + ' 首';
+  }
+}
+function muFavRowHTML(t, i) {
+  return '<div class="mu-row swipe" data-i="' + i + '" data-play="' + esc(t.root + '|' + t.path) + '">' +
+    '<button class="mu-swipe-del" data-rm="' + i + '">取消收藏</button><div class="mu-swipe-inner">' +
+    '<span class="mu-no"><b class="mu-eq"><i></i><i></i><i></i></b><em>' + (i + 1) + '</em></span>' +
+    '<span class="mu-main"><b><span class="mu-t">' + esc(t.title) + '</span>' + muQBadge(t.q) + '</b><i>' + esc([t.artist || t.albumArtist, t.album].filter(Boolean).join(' · ') || '未知歌手') + '</i></span>' +
+    '<span class="mu-dur">' + fmtMuDur(t.duration) + '</span><button class="mu-add" data-rm="' + i + '" title="取消收藏">✕</button></div></div>';
+}
+function muBindFavRows(body) {
+  body.querySelectorAll('.mu-row.swipe:not([data-bound])').forEach((r) => {
+    r.dataset.bound = '1'; bindSwipeRow(r);
+    r.addEventListener('click', (e) => { if (e.target.closest('[data-rm]')) return; playFromMusic(MU.curTracks, +r.dataset.i); });
+  });
+  body.querySelectorAll('[data-rm]:not([data-bound])').forEach((b) => { b.dataset.bound = '1'; b.addEventListener('click', async (e) => {
+    e.stopPropagation(); const t = MU.curTracks[+b.dataset.rm]; const r = await api('/api/music/fav', { root: t.root, path: t.path });
+    if (r.code !== 0) { toast(r.msg); return; } await muFavLoad(); muLoad();
+  }); });
+}
+function muObserveFavMore() { const more = $('muMore'); if (!more || more.dataset.observed) return; more.dataset.observed = '1'; if (MU.favHasMore) { const io = new IntersectionObserver((es) => { if (es.some((x) => x.isIntersecting)) muLoadMoreFavs(); }, { rootMargin: '500px' }); io.observe(more); } }
+
+function muRenderFavs(list, page) {
   const body = $('muBody');
   if (!list.length) {
     body.innerHTML = MU.q
@@ -5854,8 +6149,11 @@ function muRenderFavs(list) {
         '<span class="mu-dur">' + fmtMuDur(t.duration) + '</span>' +
         '<button class="mu-add" data-rm="' + i + '" title="取消收藏">✕</button>' +
       '</div>' +
-    '</div>').join('') + '</div>';
+    '</div>').join('') + '</div>' +
+    '<div class="mu-more" id="muMore" style="text-align:center;padding:18px;color:var(--text-3)">' +
+    (MU.favHasMore ? '继续下滑加载更多' : '已加载全部 ' + MU.favTotal + ' 首') + '</div>';
   muMarkPlaying();
+  muObserveFavMore();
   body.querySelectorAll('.mu-row.swipe').forEach((r) => {
     bindSwipeRow(r);
     r.addEventListener('click', (e) => {
@@ -5883,7 +6181,6 @@ function muRenderFavs(list) {
 function muRenderPlaylists(list) {
   const body = $('muBody');
   body.innerHTML =
-    '<div class="mu-pl-actions"><button class="btn sm primary" id="muPlNew">新建歌单</button></div>' +
     (list.length
       ? '<div class="mu-list">' + list.map((p) =>
           '<div class="mu-row pl" data-id="' + p.id + '" data-name="' + esc(p.name) + '">' +
@@ -5891,8 +6188,12 @@ function muRenderPlaylists(list) {
             '<span class="mu-main"><b><span class="mu-t">' + esc(p.name) + '</span></b><i>' + p.count + ' 首</i></span>' +
             '<button class="mu-add" data-del="' + p.id + '" title="删除歌单">✕</button>' +
           '</div>').join('') + '</div>'
-      : muEmpty('还没有歌单', '点上面「新建歌单」，把常听的归到一起'));
-  const nb = $('muPlNew');
+      : muEmpty('还没有歌单', '点左下角「新建歌单」，把常听的归到一起'));
+  document.body.classList.add('playlist-on');
+  const fab = document.createElement('button');
+  fab.className = 'mu-pl-fab'; fab.id = 'muPlNew'; fab.type = 'button'; fab.textContent = '＋ 新建歌单';
+  document.body.appendChild(fab);
+  const nb = fab;
   if (nb) nb.addEventListener('click', () => {
     askText('新建歌单', '', async (val) => {
       const r = await api('/api/music/playlist', { name: val });
@@ -5926,9 +6227,23 @@ function muAlignPlaylistSwitch() {
   box.classList.toggle('is-overflow', box.scrollWidth > box.clientWidth + 1);
 }
 
-function muRenderPlItems(list, pls) {
+async function muLoadMorePlItems(pls) {
+  if (MU.plLoading || !MU.plHasMore) return;
+  MU.plLoading = true;
+  try {
+    const r = await api('/api/music/playlist/items?id=' + MU.plId + '&offset=' + MU.plOffset + '&limit=60');
+    const page = r.data || {}, items = Array.isArray(page.items) ? page.items : [];
+    MU.plOffset = Number(page.offset || MU.plOffset) + items.length; MU.plTotal = Number(page.total || MU.plTotal); MU.plHasMore = !!page.hasMore;
+    MU.plItems.push(...items);
+    document.querySelectorAll('.mu-pl-fab').forEach((x) => x.remove());
+    muRenderPlItems(MU.plItems, pls, page);
+  } finally { MU.plLoading = false; }
+}
+function muRenderPlItems(list, pls, page) {
   const body = $('muBody');
   const items = list;
+  MU.plItems = items.slice();
+  if (page) { MU.plTotal = Number(page.total || items.length); MU.plHasMore = !!page.hasMore; }
   const playable = items.filter((x) => x.exists)
     .map((x) => ({ root: x.root, path: x.path, title: x.title, artist: x.artist, album: x.album }));
   // 顶部歌单切换条：进来默认展开第一个，点 chip 直接换歌单，不用先退回列表页。
@@ -5938,14 +6253,13 @@ function muRenderPlItems(list, pls) {
         pls.map((p) =>
           '<button class="mu-pl-chip' + (p.id === MU.plId ? ' on' : '') + '" data-pl="' + p.id +
           '" title="切到歌单：' + esc(p.name) + '">' + esc(p.name) + '<em>' + p.count + '</em></button>').join('') +
-        '<button class="mu-pl-chip mu-pl-chip-add" id="muPlNew" title="新建歌单">＋</button>' +
       '</div>'
     : '';
   body.innerHTML = sw +
     // 功能在左（用户天天用的），管理在右（低频的），手机放不下时右侧组整体换行靠右
     '<div class="mu-pl-actions">' +
       '<button class="btn sm primary" id="muPlPlayAll">播放全部</button>' +
-      '<button class="btn sm" id="muPlShuffleAll">随机播放</button>' +
+      '<button class="btn sm" id="muPlShuffleAll">歌单随机</button>' +
       '<button class="btn sm" id="muPlAdd">＋ 加歌</button>' +
       '<span class="mu-pl-manage">' +
         '<button class="btn sm" id="muPlBatch">批量</button>' +
@@ -5976,11 +6290,29 @@ function muRenderPlItems(list, pls) {
               '<button class="mu-add" data-rm="' + i + '" title="移出歌单">✕</button>' +
             '</div>' +
           '</div>').join('') + '</div>'
-      : muEmpty('歌单还是空的', '点上面「＋ 加歌」，从曲库里批量挑歌加进来'));
+      : muEmpty('歌单还是空的', '点上面「＋ 加歌」，从曲库里批量挑歌加进来')) +
+    (MU.plHasMore ? '<div class="mu-more" id="muPlMore" style="text-align:center;padding:18px;color:var(--text-3)">继续下滑加载更多</div>' : '');
+  document.body.classList.add('playlist-on');
+  const fab = document.createElement('button');
+  fab.className = 'mu-pl-fab'; fab.id = 'muPlNew'; fab.type = 'button'; fab.textContent = '＋ 新建歌单';
+  document.body.appendChild(fab);
+  fab.addEventListener('click', () => {
+    askText('新建歌单', '', async (val) => {
+      const r = await api('/api/music/playlist', { name: val });
+      if (r.code !== 0) { toast(r.msg); return false; }
+      toast(r.msg); muLoad(); return true;
+    });
+  });
   muMarkPlaying();
 
   // 歌单少时居中；多到放不下时切换成左起横滑，保证两端都能完整滑到。
   muAlignPlaylistSwitch();
+  const plMore = $('muPlMore');
+  if (plMore && !plMore.dataset.observed) {
+    plMore.dataset.observed = '1';
+    const io = new IntersectionObserver((es) => { if (es.some((x) => x.isIntersecting)) muLoadMorePlItems(pls); }, { rootMargin: '500px' });
+    io.observe(plMore);
+  }
   // 顶部歌单 chips：点哪个切哪个。用 muGo 压栈，返回键能退回上一个歌单。
   body.querySelectorAll('[data-pl]').forEach((b) => {
     b.addEventListener('click', () => {
@@ -5991,18 +6323,6 @@ function muRenderPlItems(list, pls) {
       muGo({ tab: 'playlists', plId: p.id, plName: p.name });
     });
   });
-  // chips 末尾的 ＋：跟原列表页同一个新建接口，建完刷新（新歌单会进 chips）
-  const nb2 = $('muPlNew');
-  if (nb2) nb2.addEventListener('click', () => {
-    askText('新建歌单', '', async (val) => {
-      const r = await api('/api/music/playlist', { name: val });
-      if (r.code !== 0) { toast(r.msg); return false; }
-      toast(r.msg);
-      muLoad();
-      return true;
-    });
-  });
-
   // ---------- 批量管理（多选 → 一次性移出）----------
   // 只在前端攒选择、最后一次性 PUT 整列重写：后端本来就有「整列重写」这一个口子，
   // 批量删除不必再加接口，也天然保证顺序不乱。
@@ -6290,8 +6610,9 @@ async function loadPlPickTracks() {
   const ps = [];
   if (qv) ps.push('q=' + encodeURIComponent(qv));
   if (plPickRoot) ps.push('lib=' + encodeURIComponent(plPickRoot));
+  ps.push('limit=200');
   const r = await api('/api/music/tracks' + (ps.length ? '?' + ps.join('&') : ''));
-  plPickTracks = r.data || [];
+  plPickTracks = r.data && Array.isArray(r.data.items) ? r.data.items : (r.data || []);
   renderPlPickTracks();
 }
 

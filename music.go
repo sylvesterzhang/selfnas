@@ -107,7 +107,9 @@ type musicTrack struct {
 	Q string `json:"q,omitempty"`
 }
 
-func (t *musicTrack) full() string { return filepath.Join(normPath(t.Root), filepath.FromSlash(t.Path)) }
+func (t *musicTrack) full() string {
+	return filepath.Join(normPath(t.Root), filepath.FromSlash(t.Path))
+}
 
 // 显示口径：合辑里 albumArtist 缺失时退回 artist，都空归「未知歌手」；
 // 专辑同理。聚合、分组、搜索全走这两个口径。
@@ -194,16 +196,16 @@ func musicInventory(dirs []string) map[string]struct{ m, s int64 } {
 				walk(full)
 				continue
 			}
-		if fileKind(e.Name(), false) != "audio" {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		if _, _, ok := musicTrackRoot(full); ok {
-			inv[normPath(full)] = struct{ m, s int64 }{info.ModTime().Unix(), info.Size()}
-		}
+			if fileKind(e.Name(), false) != "audio" {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			if _, _, ok := musicTrackRoot(full); ok {
+				inv[normPath(full)] = struct{ m, s int64 }{info.ModTime().Unix(), info.Size()}
+			}
 		}
 	}
 	for _, d := range dirs {
@@ -426,6 +428,7 @@ func musicMatch(t *musicTrack, q string) bool {
 // 只有一条，但很关键：**只在当前账号看得见的根里走**。
 //   - 管理员：只看得到配置里启用的根（没启用的 C: 不会出现，也就选不进曲库）
 //   - 受限账号：只看得到自己的白名单文件夹（将来开放给他们管理时天然合规）
+//
 // 根以外的路径一律 403，不靠前端自觉。
 func handleMusicBrowse(w http.ResponseWriter, r *http.Request) {
 	type item struct {
@@ -611,12 +614,29 @@ func handleMusicScan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 0, "已经在扫了", nil)
 }
 
-// GET /api/music/artists?q=
+func musicLibConfigured(lib string) bool {
+	for _, dir := range musicLibDirs() {
+		if strings.EqualFold(normPath(dir), normPath(lib)) {
+			return true
+		}
+	}
+	return false
+}
+
+// GET /api/music/artists?q=&lib=
 func handleMusicArtists(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	lib := strings.TrimSpace(r.URL.Query().Get("lib"))
+	if lib != "" && !musicLibConfigured(lib) {
+		writeJSON(w, 400, "筛选的音乐文件夹已移出曲库，请重新选择", nil)
+		return
+	}
 	tracks := musicVisibleTracks(currentUserOf(r))
 	byArtist := map[string]*musicArtist{}
 	for _, t := range tracks {
+		if lib != "" && !hasPathPrefix(t.full(), lib) {
+			continue
+		}
 		if !musicMatch(t, q) {
 			continue
 		}
@@ -630,6 +650,9 @@ func handleMusicArtists(w http.ResponseWriter, r *http.Request) {
 	// 专辑数要按 (artist, album) 二元组数：同一歌手的同一张专辑只算一张
 	seen := map[string]bool{}
 	for _, t := range tracks {
+		if lib != "" && !hasPathPrefix(t.full(), lib) {
+			continue
+		}
 		if !musicMatch(t, q) {
 			continue
 		}
@@ -646,16 +669,40 @@ func handleMusicArtists(w http.ResponseWriter, r *http.Request) {
 		out = append(out, *a)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	writeJSON(w, 0, "", out)
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 60
+	}
+	start := offset
+	if start > len(out) {
+		start = len(out)
+	}
+	end := start + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	writeJSON(w, 0, "", musicArtistPage{Items: out[start:end], Total: len(out), Offset: start, Limit: limit, HasMore: end < len(out)})
 }
 
 // GET /api/music/albums?artist=&q=
 func handleMusicAlbums(w http.ResponseWriter, r *http.Request) {
 	artist := strings.TrimSpace(r.URL.Query().Get("artist"))
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	lib := strings.TrimSpace(r.URL.Query().Get("lib"))
+	if lib != "" && !musicLibConfigured(lib) {
+		writeJSON(w, 400, "筛选的音乐文件夹已移出曲库，请重新选择", nil)
+		return
+	}
 	tracks := musicVisibleTracks(currentUserOf(r))
 	byAlbum := map[string]*musicAlbum{}
 	for _, t := range tracks {
+		if lib != "" && !hasPathPrefix(t.full(), lib) {
+			continue
+		}
 		if artist != "" && t.showArtist() != artist {
 			continue
 		}
@@ -688,10 +735,63 @@ func handleMusicAlbums(w http.ResponseWriter, r *http.Request) {
 		}
 		return out[i].Album < out[j].Album
 	})
-	writeJSON(w, 0, "", out)
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 60
+	}
+	start := offset
+	if start > len(out) {
+		start = len(out)
+	}
+	end := start + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	writeJSON(w, 0, "", musicAlbumPage{Items: out[start:end], Total: len(out), Offset: start, Limit: limit, HasMore: end < len(out)})
 }
 
-// GET /api/music/tracks?artist=&albumArtist=&album=&lib=&q=（都不带 = 全部曲目）
+type musicTrackPage struct {
+	Items   []*musicTrack `json:"items"`
+	Total   int           `json:"total"`
+	Offset  int           `json:"offset"`
+	Limit   int           `json:"limit"`
+	HasMore bool          `json:"hasMore"`
+}
+
+type musicArtistPage struct {
+	Items   []musicArtist `json:"items"`
+	Total   int           `json:"total"`
+	Offset  int           `json:"offset"`
+	Limit   int           `json:"limit"`
+	HasMore bool          `json:"hasMore"`
+}
+
+type musicAlbumPage struct {
+	Items   []musicAlbum `json:"items"`
+	Total   int          `json:"total"`
+	Offset  int          `json:"offset"`
+	Limit   int          `json:"limit"`
+	HasMore bool         `json:"hasMore"`
+}
+
+func musicPageParams(r *http.Request) (int, int) {
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 60
+	}
+	return offset, limit
+}
+
+// GET /api/music/tracks?artist=&albumArtist=&album=&lib=&q=&offset=&limit=
+// 默认只返回一页，避免把整个曲库一次性传到浏览器并生成几千个 DOM 节点。
 func handleMusicTracks(w http.ResponseWriter, r *http.Request) {
 	gq := r.URL.Query()
 	artist, albumArtist, album := strings.TrimSpace(gq.Get("artist")), strings.TrimSpace(gq.Get("albumArtist")), strings.TrimSpace(gq.Get("album"))
@@ -699,6 +799,19 @@ func handleMusicTracks(w http.ResponseWriter, r *http.Request) {
 	// lib 筛选：按曲库目录（cfg.MusicLibrary 的某个绝对路径）只看该文件夹下的歌。
 	// 是前缀匹配而不是根匹配 —— 曲库目录可以是根下的任意一层子文件夹。
 	lib := strings.TrimSpace(gq.Get("lib"))
+	if lib != "" {
+		valid := false
+		for _, dir := range musicLibDirs() {
+			if strings.EqualFold(normPath(dir), normPath(lib)) {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			writeJSON(w, 400, "筛选的音乐文件夹已移出曲库，请重新选择", nil)
+			return
+		}
+	}
 	tracks := musicVisibleTracks(currentUserOf(r))
 	out := make([]*musicTrack, 0, len(tracks))
 	for _, t := range tracks {
@@ -741,7 +854,25 @@ func handleMusicTracks(w http.ResponseWriter, r *http.Request) {
 	for _, t := range out {
 		t.Q = musicQualityOf(t.Root, t.Path, t.Size, t.Mtime, t.Duration)
 	}
-	writeJSON(w, 0, "", out)
+	offset, _ := strconv.Atoi(gq.Get("offset"))
+	limit, _ := strconv.Atoi(gq.Get("limit"))
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 60
+	}
+	start := offset
+	if start > len(out) {
+		start = len(out)
+	}
+	end := start + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	writeJSON(w, 0, "", musicTrackPage{
+		Items: out[start:end], Total: len(out), Offset: start, Limit: limit, HasMore: end < len(out),
+	})
 }
 
 // ---------- 歌单 ----------
@@ -797,7 +928,9 @@ func handleMusicPlaylist(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 0, "", out)
 
 	case http.MethodPost:
-		var b struct{ Name string `json:"name"` }
+		var b struct {
+			Name string `json:"name"`
+		}
 		if !decodeBody(r, &b) || strings.TrimSpace(b.Name) == "" {
 			writeJSON(w, 400, "歌单名不能为空", nil)
 			return
@@ -871,20 +1004,26 @@ func handleMusicPlaylistItems(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 404, "歌单不存在", nil)
 			return
 		}
-		rows, err := db.Query(`SELECT root, path, pos FROM playlist_item WHERE playlist_id = ? ORDER BY pos`, id)
+		offset, limit := musicPageParams(r)
+		var total int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM playlist_item WHERE playlist_id = ?`, id).Scan(&total); err != nil {
+			writeJSON(w, 500, "读取失败", nil)
+			return
+		}
+		rows, err := db.Query(`SELECT root, path, pos FROM playlist_item WHERE playlist_id = ? ORDER BY pos LIMIT ? OFFSET ?`, id, limit, offset)
 		if err != nil {
 			writeJSON(w, 500, "读取失败", nil)
 			return
 		}
 		type item struct {
 			pt
-			Pos     int     `json:"pos"`
-			Exists  bool    `json:"exists"`
-			Title   string  `json:"title"`
-			Artist  string  `json:"artist"`
-			Album   string  `json:"album"`
-			Dur     float64 `json:"duration"`
-			Q       string  `json:"q,omitempty"`
+			Pos    int     `json:"pos"`
+			Exists bool    `json:"exists"`
+			Title  string  `json:"title"`
+			Artist string  `json:"artist"`
+			Album  string  `json:"album"`
+			Dur    float64 `json:"duration"`
+			Q      string  `json:"q,omitempty"`
 		}
 		out := []item{}
 		for rows.Next() {
@@ -910,7 +1049,13 @@ func handleMusicPlaylistItems(w http.ResponseWriter, r *http.Request) {
 				it.Title = filepath.Base(it.Path)
 			}
 		}
-		writeJSON(w, 0, "", out)
+		writeJSON(w, 0, "", map[string]interface{}{
+			"items":   out,
+			"total":   total,
+			"offset":  offset,
+			"limit":   limit,
+			"hasMore": offset+len(out) < total,
+		})
 
 	case http.MethodPost:
 		var b struct {
@@ -1014,12 +1159,18 @@ func handleMusicFav(w http.ResponseWriter, r *http.Request) {
 	user := currentUserOf(r)
 	switch r.Method {
 	case http.MethodGet:
+		offset, limit := musicPageParams(r)
+		var total int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM music_fav f INNER JOIN music_track t ON t.root=f.root AND t.path=f.path WHERE f.username=?`, user).Scan(&total); err != nil {
+			writeJSON(w, 500, "读取失败", nil)
+			return
+		}
 		rows, err := db.Query(`SELECT f.root, f.path, COALESCE(t.title,''), COALESCE(t.artist,''),
 			COALESCE(t.album_artist,''), COALESCE(t.album,''), COALESCE(t.track_no,0), COALESCE(t.duration,0),
 			COALESCE(t.size,0), COALESCE(t.mtime,0)
 			FROM music_fav f
 			INNER JOIN music_track t ON t.root = f.root AND t.path = f.path
-			WHERE f.username = ? ORDER BY f.ts DESC`, user)
+			WHERE f.username = ? ORDER BY f.ts DESC LIMIT ? OFFSET ?`, user, limit, offset)
 		if err != nil {
 			writeJSON(w, 500, "读取失败", nil)
 			return
@@ -1047,7 +1198,13 @@ func handleMusicFav(w http.ResponseWriter, r *http.Request) {
 				out = append(out, t)
 			}
 		}
-		writeJSON(w, 0, "", out)
+		writeJSON(w, 0, "", map[string]interface{}{
+			"items":   out,
+			"total":   total,
+			"offset":  offset,
+			"limit":   limit,
+			"hasMore": offset+len(out) < total,
+		})
 
 	case http.MethodPost:
 		var b struct {

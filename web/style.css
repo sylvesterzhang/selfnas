@@ -69,18 +69,18 @@ html[data-theme="light"] {
   --danger-soft: #fcebeb;
 }
 
-/* 夜间：OLED 纯黑底，比跟随系统的暗色更深一档 */
+/* 夜间：深石墨底，不使用纯黑；用低对比层次做出更克制的高级感 */
 html[data-theme="dark"] {
-  --bg: #0a0a0a;
-  --surface: #17171a;
-  --surface-2: #202024;
-  --text: #ececec;
-  --text-2: #b4b2a9;
-  --text-3: #7a7a76;
-  --border: rgba(255, 255, 255, 0.14);
-  --accent: #85b7eb;
-  --accent-soft: #0c447c;
-  --accent-line: #185fa5;
+  --bg: #111318;
+  --surface: #191b21;
+  --surface-2: #23262d;
+  --text: #eef0f4;
+  --text-2: #b7bbc5;
+  --text-3: #858b98;
+  --border: rgba(235, 240, 248, 0.11);
+  --accent: #9ab9e6;
+  --accent-soft: #27364b;
+  --accent-line: #456487;
   --ok: #97c459;
   --ok-soft: #27500a;
   --ok-line: #3b6d11;
@@ -2291,22 +2291,36 @@ html[data-theme="dark"] .mu-q.hires { color: #f2d07a; background: rgba(212, 160,
    横滑不换行、隐藏滚动条（跟盘符条一个口径），选中项用主题色高亮。 */
 .mu-pl-switch {
   position: relative;
-  display: flex; justify-content: center; gap: 6px; align-items: center;
+  display: flex; justify-content: flex-start; gap: 6px; align-items: center;
   overflow-x: auto; overflow-y: hidden;
-  padding: 2px 0 12px; margin: 4px 0 2px;
+  padding: 2px 0 8px; margin: 0 0 2px;
   scrollbar-width: none; touch-action: pan-x; cursor: grab;
 }
 /* 不再画一整条横线，只留一小段居中点缀：像轻微的音频波形，和上面的顶栏分隔线区分开。 */
-.mu-pl-switch::after {
-  content: ''; position: absolute; left: 50%; bottom: 3px; width: 34px; height: 2px;
-  transform: translateX(-50%); border-radius: 3px;
-  background: var(--accent-soft);
-  box-shadow: -10px 0 0 -0.25px var(--accent-soft), 10px 0 0 -0.25px var(--accent-soft);
-  pointer-events: none;
-}
+.mu-pl-switch::after { display: none; }
 /* 歌单很多时不能居中溢出，否则左右两端会被裁掉；此时自然变成可横滑的左起列表。 */
-.mu-pl-switch.is-overflow { justify-content: flex-start; }
 .mu-pl-switch::-webkit-scrollbar { display: none; }
+
+/* 新建歌单是全局入口，固定在音乐页左下角，不占歌单横向列表的位置。 */
+body:not(.playlist-on) .mu-pl-fab { display: none !important; }
+.mu-pl-fab {
+  position: fixed; left: 18px;
+  bottom: calc(18px + env(safe-area-inset-bottom));
+  z-index: 40;
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 40px; padding: 0 15px;
+  border: 0; border-radius: 22px;
+  background: var(--accent); color: #fff;
+  box-shadow: 0 8px 22px rgba(30, 60, 90, .22);
+  font: inherit; font-size: 13px; font-weight: 600;
+  cursor: pointer;
+}
+.mu-pl-fab:hover { filter: brightness(.96); transform: translateY(-1px); }
+.mu-pl-fab:active { transform: translateY(0); }
+body.mini-on .mu-pl-fab { bottom: calc(78px + env(safe-area-inset-bottom)); }
+@media (max-width: 520px) {
+  .mu-pl-fab { left: 14px; bottom: calc(14px + env(safe-area-inset-bottom)); }
+}
 .mu-pl-chip {
   flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px;
   padding: 5px 11px; border-radius: 15px; border: 1px solid transparent;
@@ -2321,12 +2335,13 @@ html[data-theme="dark"] .mu-q.hires { color: #f2d07a; background: rgba(212, 160,
 .mu-pl-chip-add { width: 28px; padding: 5px 0; justify-content: center; font-size: 15px; line-height: 1; color: var(--text-2); border-color: var(--border); }
 
 /* 歌单操作层级：只有「播放全部」承担主操作视觉重量，其余动作退到轻按钮。 */
-.mu-pl-actions .btn.primary { box-shadow: none; }
+.mu-pl-actions .btn.primary { box-shadow: none; background: var(--accent-soft); color: var(--accent); }
 .mu-pl-actions .btn:not(.primary) { background: transparent; }
 
-
-/* 歌单详情操作条：左边功能、右边管理；手机放不下时右侧组整体换行靠右 */
-.mu-pl-actions { display: flex; gap: 8px; margin: 12px 0 2px; flex-wrap: wrap; align-items: center; }
+/* 歌单详情操作条：紧贴歌单切换条，主操作与管理操作分组但不抢视觉中心。 */
+.mu-pl-actions { display: flex; gap: 5px; margin: 3px 0 2px; padding: 3px 0; flex-wrap: wrap; align-items: center; }
+.mu-pl-actions .btn.sm { min-height: 30px; padding: 4px 9px; font-size: 12px; }
+.mu-pl-actions .mu-pl-manage { gap: 5px; }
 .mu-pl-manage { display: flex; gap: 8px; margin-left: auto; }
 
 /* 批量管理条：进入批量模式才出现，浅主题色底提示「现在点行是勾选不是播放」 */

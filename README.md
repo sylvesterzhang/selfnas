@@ -6,25 +6,39 @@
 
 <img src="docs/screenshots/remote-access.png" alt="SelfNAS 外网访问架构：家里的电脑通过 Tailscale 或 Cloudflare 让外面的手机访问">
 
-## v0.21.3 新功能：外网访问
+## v0.21.4 新功能：自建 Relay（FRP 类反向隧道）
 
-这次更新新增了完整的外网连接能力，不需要用户自己搭建中转服务器。SelfNAS 现在支持三种模式：
+这次更新在原有 Tailscale / Cloudflare 通道之外，增加了自建 Relay（FRP 类反向隧道）模式。它适合已经有一台公网服务器、希望自己掌握中转服务和访问入口的用户。SelfNAS 现在支持四种外网访问模式：
 
 | 模式 | 适合场景 | 对方需要安装什么 | 地址特点 |
 |---|---|---|---|
 | **Tailscale** | 自己在外面访问自己的 NAS | 手机或电脑安装 Tailscale 并登录同一账号 | 稳定地址；优先点对点，失败时自动走中继 |
 | **Cloudflare 临时地址** | 把文件站临时分享给别人 | 什么都不用安装，浏览器直接打开 | 一键生成；程序重启后地址会变化 |
 | **Cloudflare 固定地址** | 长期对外提供一个固定网址 | 自己的域名托管在 Cloudflare | 地址固定；需要域名和 Cloudflare Tunnel Token |
+| **自建 Relay（FRP 类反向隧道）** | 有自己的公网服务器，想自主管理中转 | SelfNAS 主动连出 WebSocket；公网服务器运行 selfnas-relay | 不需要家里公网 IP、端口映射或 DMZ；公网入口由 Relay 提供 |
 
-三种模式都从管理台的「外网访问」进入。Tailscale 和 Cloudflare 客户端已经内置在 SelfNAS 中，NAS 这台机器不需要另外安装软件，也不需要手动配置路由器端口映射。局域网内仍然直接使用局域网 IP，不需要经过外网通道。
+四种模式都从管理台的「外网访问」进入。Tailscale 和 Cloudflare 客户端已经内置在 SelfNAS 中；自建 Relay 需要你在一台有公网 IP 的服务器上单独部署 selfnas-relay。局域网内仍然直接使用局域网 IP，不需要经过外网通道。
 
-> **升级提示：** 如果你需要在手机流量下访问、把文件分享给别人，或者不想再手动配置端口映射，建议升级到 `v0.21.3`。升级后打开管理台的「外网访问」即可选择连接方式。
+### 自建 Relay 怎么工作
+
+SelfNAS 会主动连接你自己的 Relay 服务端，建立一条带心跳和自动重连的 WebSocket 长连接。外部访问者请求 Relay 后，Relay 通过这条已建立的连接把请求转回内网 SelfNAS，再将文件、音频、视频和 Range 响应流式返回。这样家里的 SelfNAS 不需要公网 IP、端口映射、DMZ 或入站防火墙放行。
+
+使用步骤：
+
+1. 在有公网 IP 的服务器上部署 [selfnas-relay](https://github.com/sylvesterzhang/selfnas-relay)，首次启动时设置 Relay 管理员密码。
+2. 在 Relay 管理台批准 SelfNAS 发起的接入申请。
+3. 回到 SelfNAS 管理台「外网访问 → 自建中转」，填写 Relay 地址并提交申请。
+4. 申请批准后，SelfNAS 会保存节点凭证并自动建立长连接，页面会显示公网访问地址。
+
+Relay 服务端和 SelfNAS 客户端的数据通道、Tailscale、Cloudflare 彼此独立，可以按场景分别使用。公网暴露有风险，Relay 管理台和 SelfNAS 管理台都必须使用复杂且不易猜测的密码，并建议使用 HTTPS、反向代理或 IP 白名单保护管理入口。
+
+> **升级提示：** 如果你需要在手机流量下访问、把文件分享给别人，或者希望自己掌握公网中转服务器，建议升级到 `v0.21.4`。升级后打开管理台的「外网访问」即可选择连接方式。
 
 <img src="docs/screenshots/hero.png" alt="躺床上用手机看电脑里的电影">
 
 <img src="docs/screenshots/remote-access-admin.png" alt="SelfNAS 管理台中的外网访问页面，展示 Tailscale 和 Cloudflare 访问方式">
 
-<sub>架构图解释原理，真实管理台截图证明功能已经内置：在「外网访问」页面选择 Tailscale、Cloudflare 临时地址或 Cloudflare 固定地址。</sub>
+<sub>架构图解释原理，真实管理台截图证明功能已经内置：在「外网访问」页面选择 Tailscale、Cloudflare 临时地址、Cloudflare 固定地址或自建 Relay。</sub>
 
 <table>
 <tr>
